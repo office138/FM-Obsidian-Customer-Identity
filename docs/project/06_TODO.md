@@ -1,15 +1,22 @@
 # 06_TODO
 
-## GitHub移行トラック（Phase C-8、2026-08-01）
+## GitHub移行トラック（Phase C-8S4、2026-08-01）
 
 - [x] C-5C1〜C-5D：GitHub向けsanitizationとrepositoryメタファイル整備。
 - [x] C-5E：73件全体のsecurity／byte／Parser／回帰／Package validation。
 - [x] C-6〜C-6D：Git初期化、73 filesのinitial commit `0708ce25ff073a84c9f178a1549810c91b9f605f`。
 - [x] C-7〜C-7C：private repository `office138/FM-Obsidian-Customer-Identity`へinitial push、local／origin一致。
 - [x] C-8：GitHub状態を文書10件へ反映し、第2commit `docs: record GitHub repository state and next steps`をpushする。
-- [ ] 次工程：本番Bridge同期準備。`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`への同期はまだ実施しない。
+- [x] C-8S1〜C-8S2A：本番Bridge backup、内容同期、同期前ACL復元、Parser／回帰／COMPARE検証。
+- [x] C-8S3：本番側既存GitへBridge 1件のみcommit。HEAD `35c8bcb43fb2a2fc5a29ce69e43629b684a8bf2d`、clean、remote 0。
+- [x] FileMaker実機：transport、NO_CHANGE、resolvedNotes参照パス更新PASS。
+- [ ] C-8S4：本番同期結果を許可文書だけへ反映し、第3commitとしてpushする。
+- [ ] 最新Project State Package作成。
+- [ ] Package独立検証。
+- [ ] tag／Release作成判断。
+- [ ] backup／TEMP／TestRoot／report、E2Eテスト顧客、旧staging／不要資産の削除判断。
 
-Bridge確定値：v8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、Git blob id `e45fc337fde2643f40026913d8ddf5a3a1342814`、blob SHA256 `548AD01CBD975A53442DBEBB72E67D3B961F7F8F21BF053254F8904B0CF4D9D3`。package toolは19,565 bytes、SHA256 `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`。Windows回帰24 / 24、安全確認8 / 8、PS5.1 Parser 9 / 9、PS7 Parser 9 / 9、fixtures 27 / 27、FileMaker scripts 3 / 3 PASS。本番は75,488 bytes、SHA256 `3B929018983E0786FE0853B8F389EF8624A4A4BF6D10E14E4F29BE12551D6030`で未同期。Release、tag、新規migration ZIPは未作成。元112 fingerprintはNOT VERIFIED。
+本番Bridge確定値：`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`、v8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、GitHub版とbyte一致、同期前ACLへ復元済み。PS5.1／PS7 Parser errors 0 / 0、Windows回帰24 / 24、安全8 / 8、COMPARE focused PASS、fixtures 27 / 27、FileMaker scripts 3 / 3不変。Release、tag、最新移行後Project State ZIPは未作成。元112 fingerprintはNOT VERIFIED。
 
 ## 過去の完了・TODO履歴
 

@@ -1,14 +1,14 @@
 # 08_GIT_STATUS
 
-## GitHub移行トラック（Phase C-8、2026-08-01）
+## GitHub移行トラック（Phase C-8S4、2026-08-01）
 
-Phase C-5C1〜C-7 COMPLETE。repository URLは`https://github.com/office138/FM-Obsidian-Customer-Identity`、visibilityはPrivate、branchは`main`、remoteは`origin`（fetch／pushとも`https://github.com/office138/FM-Obsidian-Customer-Identity.git`、credential埋込みなし、remote 1件）。initial commitは`0708ce25ff073a84c9f178a1549810c91b9f605f`（short `0708ce2`、subject `feat: establish FileMaker Obsidian customer identity project`、parentなし、commit count 1）、73 files。Author／Committerは`office138 <157262077+office138@users.noreply.github.com>`、Co-authored-byなし。Phase C-7完了時はlocal HEAD＝origin/main＝initial commit、ahead 0／behind 0、upstream `origin/main`、working tree clean。
+GitHub repositoryは`office138/FM-Obsidian-Customer-Identity`、Private、branch `main`、remote `origin`。Phase C-8S4開始時はlocal HEAD＝origin/main＝`61dbc5cd9be5fc7fcb2a44d6d74467438d5ae376`、ahead 0／behind 0、commit count 2、working tree clean。C-8S4は許可文書だけを第3commit `docs: record production deployment and verification`としてpushする。自己参照を避けるため第3commit IDは本文へ固定しない。
 
-Phase C-8は既存文書10件だけをstageし、`docs: record GitHub repository state and next steps`をinitial commitの子となる第2commitとしてpushする。自己参照を避けるため第2commit hashは本文へ固定しない。Bridgeはv8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、Git blob id `e45fc337fde2643f40026913d8ddf5a3a1342814`、blob SHA256 `548AD01CBD975A53442DBEBB72E67D3B961F7F8F21BF053254F8904B0CF4D9D3`。package toolは19,565 bytes、SHA256 `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`。Windows回帰24 / 24、安全確認8 / 8、PS5.1 Parser 9 / 9、PS7 Parser 9 / 9、fixtures 27 / 27、FileMaker scripts 3 / 3 PASS。
+本番側既存GitはGitHubとは別履歴。repository表記`<VAULT_ROOT>\scripts`、branch `main`、HEAD `35c8bcb43fb2a2fc5a29ce69e43629b684a8bf2d`（short `35c8bcb`）、parent `435cc9fd0b4ff7ec2d6dd839bdabae4053d6fba8`、subject `fix: resolve Python safely for compare mode`、commit count 3、working tree clean、remote 0、push未実施。changed fileは`FM-Obsidian-Bridge-Payload.ps1` 1件。Author／Committerは`office138`、email非公開。
 
-次工程は「本番Bridge同期準備」。本番Bridgeは未同期（75,488 bytes、SHA256 `3B929018983E0786FE0853B8F389EF8624A4A4BF6D10E14E4F29BE12551D6030`）で、公開文書では`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`のみ使用する。Release、tag、新規migration ZIPは未作成。元112 fingerprintはNOT VERIFIED。
+本番Bridgeは76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`でGitHub版とbyte一致し、同期前ACLへ復元済み。PS5.1／PS7 Parser errors 0 / 0、回帰24 / 24、安全8 / 8、COMPARE focused、FileMaker実機transport／NO_CHANGE／resolvedNotes参照パス更新PASS。
 
-Git操作ではcommand-scoped `-c safe.directory=<REPOSITORY_ROOT>`だけを使用し、global／system／localの永続safe.directory設定は追加しない。Phase C-8完了後のcommit countは2となる。
+Git操作ではcommand-scoped `-c safe.directory=<REPOSITORY_ROOT>`だけを使用し、永続safe.directory設定を追加しない。Release、tag、最新移行後Project State ZIPは未作成。backup、TEMP、TestRoot、reportは保持。元112 fingerprintはNOT VERIFIED。
 
 ## Historical Git Status
 

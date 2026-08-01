@@ -1,18 +1,22 @@
 # FileMaker ↔ Obsidian 社名・代表者変更対応プロジェクト
 
-## CURRENT STATE OVERRIDE（Phase C-8、2026-08-01）
+## CURRENT STATE OVERRIDE（Phase C-8S4、2026-08-01）
 
-本節を再開時の正とし、下位の旧CURRENT STATE／再開地点／Next Taskは履歴として扱う。Phase C-5C1〜C-7はCOMPLETE。Phase C-8ではGitHub状態を文書へ反映し、文書限定の第2commitを作成・pushする。次工程は「本番Bridge同期準備」であり、本番同期そのものは未実施である。
+本節を再開時の正とし、下位の旧CURRENT STATE／再開地点／Next Taskは履歴として扱う。
 
-- GitHub：private repository `office138/FM-Obsidian-Customer-Identity`、branch `main`、remote `origin`（`https://github.com/office138/FM-Obsidian-Customer-Identity.git`）。initial commitは`0708ce25ff073a84c9f178a1549810c91b9f605f`、73 files。Phase C-7完了時点でlocal／origin一致、ahead 0／behind 0、working tree clean。
-- Phase C-8 commit：messageは`docs: record GitHub repository state and next steps`。initial commitをparentとする第2commitであり、自己参照を避けるためcommit hashは本文へ固定しない。
-- Bridge：v8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、Git blob id `e45fc337fde2643f40026913d8ddf5a3a1342814`、blob SHA256 `548AD01CBD975A53442DBEBB72E67D3B961F7F8F21BF053254F8904B0CF4D9D3`。
-- Package tool：19,565 bytes、SHA256 `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`。
-- 検証：Windows回帰24 / 24、安全確認8 / 8、PS5.1 Parser 9 / 9、PS7 Parser 9 / 9、fixtures 27 / 27、FileMaker scripts 3 / 3 PASS。
-- 本番：Bridge未同期。本番ファイルは75,488 bytes、SHA256 `3B929018983E0786FE0853B8F389EF8624A4A4BF6D10E14E4F29BE12551D6030`。実パスは公開文書に記載せず`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`とする。
-- 未作成：Release、tag、新規migration ZIP。既存Packageは履歴資料であり再作成しない。元112 fingerprintはNOT VERIFIED。
+- Phase C-8／C-8S1: COMPLETE。C-8S2は初回atomic replacement失敗・本番未変更。C-8S2Rは内容置換成功後にACL不一致で停止。C-8S2Aは同期前ACL復元と同期後検証までCOMPLETE。C-8S3は本番側既存GitへのBridge単独commitまでCOMPLETE。現在はC-8S4。
+- GitHub：Private repository `office138/FM-Obsidian-Customer-Identity`、branch `main`、remote `origin`。C-8S4開始HEAD／origin/mainは`61dbc5cd9be5fc7fcb2a44d6d74467438d5ae376`、commit count 2、ahead／behind 0 / 0、clean。C-8S4文書commitは第3commitであり、自己参照回避のためIDを本文へ固定しない。
+- 本番Bridge：`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`、v8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`。GitHub版とbyte一致。UTF-8 BOMあり、CRLF 1,453、末尾改行なし。ACL ownerは同期前値へ復元済み、ACL／SDDLは同期前状態と一致、Attributes Archive、ADS追加0。
+- 同期履歴：外部backup成功→null backup pathの`File.Replace`失敗（本番未変更）→明示backup pathで内容置換成功→metadata不一致検出→File.Replace backupの同期前ACL検証→`Set-Acl`で完全復元→内容SHA不変→後続検証PASS。
+- 検証：PS5.1／PS7 Parser errors 0 / 0、Windows回帰24 / 24、安全確認8 / 8、fixture 27 / 27、FileMaker scripts 3 / 3、COMPARE focused PASS。本番Vault意図しない変更0。
+- UPDATE_CUSTOMER_IDENTITY：dispatch、NO_CHANGE、CUSTOMER_IDENTITY_UPDATED、MISSING_REQUIRED_FIELD、CUSTOMER_NOT_FOUND、folderRenamed、rollbackは実動PASS。INVALID_UUID_FORMATは個別テストなし。DUPLICATE_NOTE_TYPEは個別テストなし・本番／GitHub差分なし。resolvedNotesは応答フィールド出力確認。LF／CRLF／MIXED本文保持PASS、更新後CRLF化は既知動作。
+- COMPARE：PATH上の`python.exe`（Python 3.13.9）をresolverが選択。引数境界、WorkingDirectory、location復元、exit code、stdout／stderr PASS。COMPARE外resolver呼出し0、本番Vault書込み0。実Python絶対パスは非公開。
+- FileMaker実機：削除予定E2Eテスト顧客で`変更はありません。`を確認。transport、NO_CHANGE、resolvedNotes参照パス更新PASS、エラーなし、FileMaker変更不要。UUID・顧客名・実ノート／フォルダ名は非公開。
+- 本番側既存Git：`<VAULT_ROOT>\scripts`、branch `main`、HEAD `35c8bcb43fb2a2fc5a29ce69e43629b684a8bf2d`、subject `fix: resolve Python safely for compare mode`、commit count 3、clean、remote 0、push未実施。GitHub repositoryとは別履歴。Author／Committerは`office138`、email非公開。
+- backup／TEMP：外部backupとFile.Replace backupはいずれも75,488 bytes、SHA256 `3B929018983E0786FE0853B8F389EF8624A4A4BF6D10E14E4F29BE12551D6030`で保持。同期専用TEMP、TestRoot、reportも保持。
+- 未作成：Release、tag、最新移行後Project State ZIP。元112 fingerprintはNOT VERIFIED、元資産書込み0。
 
-先にroot `README.md`と`handoff/`直下3文書を読むこと。本番Bridge同期、Release／tag作成、追加commit、旧stagingの再利用は、別の明示指示なしに実行しない。
+次工程は最新Project State Package作成・独立検証、その後のtag／Release判断と保持資産の削除判断である。先にroot `README.md`と`handoff/`直下3文書を読み、未実施項目をCOMPLETEにしない。
 # ChatGPT用・再起動プロンプト
 
 ---

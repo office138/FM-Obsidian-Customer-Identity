@@ -1,12 +1,18 @@
 # 00_PROJECT_STATUS
 
-## GitHub移行トラック最新状態（Phase C-8、2026-08-01）
+## GitHub移行トラック最新状態（Phase C-8S4、2026-08-01）
 
-本節が現状の正であり、以下の旧Project／Current Phase／Git節は履歴として扱う。Phase C-5C1〜C-7 COMPLETE。private repository `office138/FM-Obsidian-Customer-Identity`、branch `main`、remote `origin`（`https://github.com/office138/FM-Obsidian-Customer-Identity.git`）。initial commit `0708ce25ff073a84c9f178a1549810c91b9f605f`は73 files。Phase C-7完了時はlocal／origin一致、ahead 0／behind 0、clean。Phase C-8は文書10件限定の第2commit `docs: record GitHub repository state and next steps`をpushする（hashは自己参照回避のため本文に固定しない）。
+本節が現状の正であり、以下の旧Project／Current Phase／Git節は履歴として扱う。Phase C-8／C-8S1 COMPLETE。C-8S2は初回atomic replacement失敗・本番未変更、C-8S2Rは内容置換成功後にACL不一致で停止、C-8S2Aは同期前ACL復元と検証までCOMPLETE、C-8S3は本番側既存Git commitまでCOMPLETE。現在はC-8S4。
 
-Bridgeはv8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、Git blob id `e45fc337fde2643f40026913d8ddf5a3a1342814`、blob SHA256 `548AD01CBD975A53442DBEBB72E67D3B961F7F8F21BF053254F8904B0CF4D9D3`。package toolは19,565 bytes、SHA256 `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`。Windows回帰24 / 24、安全確認8 / 8、PS5.1 Parser 9 / 9、PS7 Parser 9 / 9、fixtures 27 / 27、FileMaker scripts 3 / 3 PASS。
+GitHubはPrivate repository `office138/FM-Obsidian-Customer-Identity`、branch `main`。C-8S4開始HEAD／origin/mainは`61dbc5cd9be5fc7fcb2a44d6d74467438d5ae376`、commit count 2、clean。C-8S4文書commitは第3commitであり、自己参照回避のためIDを本文へ固定しない。
 
-次工程は「本番Bridge同期準備」。本番Bridgeは未同期で、現行本番ファイルは75,488 bytes、SHA256 `3B929018983E0786FE0853B8F389EF8624A4A4BF6D10E14E4F29BE12551D6030`。実パスは`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`のみで表す。Release、tag、新規migration ZIPは未作成。既存Packageは履歴資料。元112 fingerprintはNOT VERIFIED。
+本番Bridgeは`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`へ同期完了。v8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、GitHub版とbyte一致。UTF-8 BOMあり、CRLF 1,453、末尾改行なし。同期前ACLへ復元済み、Attributes Archive、ADS追加0。
+
+PS5.1／PS7 Parser errors 0 / 0、Windows回帰24 / 24、安全確認8 / 8、COMPARE focused PASS、fixture 27 / 27、FileMaker scripts 3 / 3不変。FileMaker実機transport、NO_CHANGE、resolvedNotes参照パス更新PASS、エラーなし、FileMaker変更不要。
+
+本番側既存Gitは`<VAULT_ROOT>\scripts`、HEAD `35c8bcb43fb2a2fc5a29ce69e43629b684a8bf2d`、subject `fix: resolve Python safely for compare mode`、commit count 3、clean、remote 0、push未実施。外部backup、File.Replace backup、同期専用TEMP、TestRoot、reportは保持。
+
+次工程は最新Project State Package作成・独立検証、その後のtag／Release判断と保持資産の削除判断。Release、tag、最新移行後Project State ZIPは未作成。元112 fingerprintはNOT VERIFIED。
 
 ## Project
 FileMaker ↔ Obsidian 連携システム改修プロジェクト（社名・代表者変更対応、確定設計書 第4回修正版・改訂2 準拠）

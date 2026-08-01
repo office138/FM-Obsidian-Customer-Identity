@@ -1,42 +1,38 @@
 # NEXT_TASK
 
-## 本番Bridge同期準備
+## 現在地点
 
-Phase C-8完了後の次工程は、GitHub版Bridgeと本番Bridgeの差分を確定し、安全な本番同期計画を作ることである。現時点で本番同期は未実施。
+Phase C-8S3までCOMPLETE。本番Bridge同期、ACL復元、機械検証、FileMaker実機transport確認、本番側既存GitへのBridge単独commitは完了した。Phase C-8S4では、この確定状態をGitHub文書10件へ反映し、文書だけを第3commitとしてpushする。
 
-## 作業対象
+## 次工程
 
-- GitHub版 `FM-Obsidian-Bridge-Payload.ps1`
-- `<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`
-- 本番バックアップ
-- 差分分類
-- 本番反映可否判断
+Phase C-8S4完了後は、次の順で判断する。
 
-## 確定基準
+1. 最新Project State Packageを作成する。
+2. Packageを独立検証する。
+3. GitHub tag／Releaseの作成可否を判断する。
+4. 保持中の外部バックアップ、File.Replace backup、同期専用TEMP、回帰TestRoot、reportの削除可否を判断する。
+5. E2Eテスト顧客の削除可否を判断する。
+6. 旧staging／不要資産の後片付けを判断する。
 
-- GitHub版: Version 8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`
-- 本番版: 75,488 bytes、SHA256 `3B929018983E0786FE0853B8F389EF8624A4A4BF6D10E14E4F29BE12551D6030`
+未実施の工程をCOMPLETEとして扱わない。Release、tag、最新移行後Project State ZIPはまだ作成しない。
+
+## 確定baseline
+
 - GitHub repository: `office138/FM-Obsidian-Customer-Identity`、Private、branch `main`
-- Initial commit: `0708ce25ff073a84c9f178a1549810c91b9f605f`
-- Release / tag / 最新GitHub移行後Project State ZIP: 未作成
-
-## 承認済み同期手順
-
-1. GitHub版と本番版の差分確定
-2. 本番バックアップ
-3. 本番へ承認済みBridgeを反映
-4. PS5.1 Parser
-5. 24 / 24回帰
-6. 安全確認8 / 8
-7. FileMaker実機影響確認
-8. 本番Size・SHA256更新
-9. 既存ローカルGitへの反映方針決定
-10. Project State文書更新
+- Phase C-8S4開始HEAD: `61dbc5cd9be5fc7fcb2a44d6d74467438d5ae376`、origin/main同値、commit count 2、clean
+- 本番Bridge: `<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`
+- Version 8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`
+- 本番側既存Git: `<VAULT_ROOT>\scripts`、HEAD `35c8bcb43fb2a2fc5a29ce69e43629b684a8bf2d`、clean、remote 0
+- Parser: PS5.1／PS7 PASS、errors 0 / 0
+- Windows回帰: 24 / 24 PASS、安全確認8 / 8 PASS
+- FileMaker実機transport／NO_CHANGE／resolvedNotes参照パス更新: PASS
+- 外部バックアップ、File.Replace backup、TEMP、TestRoot、report: 保持
+- 元112 fingerprint: NOT VERIFIED、元資産書込み0
 
 ## 変更禁止
 
-- 本番へ即時コピー
-- 既存ローカルGitの履歴変更
-- Release・tag作成
-- 旧staging削除
-- 差分確定・バックアップ・承認前の本番更新
+- GitHub版Bridge、本番Bridge、本番側既存Git、FileMaker、fixtureの変更
+- Release、tag、Project State ZIPの先行作成
+- バックアップ／TEMP／TestRoot／reportの削除
+- 実Windowsユーザー名、実メール、実絶対パス、UUID、顧客情報、credential、secretの文書追加

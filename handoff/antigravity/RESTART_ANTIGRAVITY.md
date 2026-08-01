@@ -1,10 +1,19 @@
 # FileMaker ↔ Obsidian連携プロジェクト 再起動プロンプト
 
-## CURRENT STATE OVERRIDE（Phase C-8、2026-08-01）
+## CURRENT STATE OVERRIDE（Phase C-8S4、2026-08-01）
 
-本節を再開時の正とし、下位の旧状態記述は履歴として扱う。Phase C-5C1〜C-7 COMPLETE。private repository `office138/FM-Obsidian-Customer-Identity`、branch `main`、remote `origin`（`https://github.com/office138/FM-Obsidian-Customer-Identity.git`）。initial commit `0708ce25ff073a84c9f178a1549810c91b9f605f`は73 files。Phase C-8は文書10件限定の第2commit `docs: record GitHub repository state and next steps`をpushする（hashは自己参照回避のため本文に固定しない）。Bridgeはv8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、Git blob id `e45fc337fde2643f40026913d8ddf5a3a1342814`、blob SHA256 `548AD01CBD975A53442DBEBB72E67D3B961F7F8F21BF053254F8904B0CF4D9D3`。package toolは19,565 bytes、SHA256 `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`。Windows回帰24 / 24、安全確認8 / 8、PS5.1 Parser 9 / 9、PS7 Parser 9 / 9、fixtures 27 / 27、FileMaker scripts 3 / 3 PASS。
+本節を再開時の正とし、下位の旧状態記述は履歴として扱う。
 
-次工程は「本番Bridge同期準備」。本番Bridgeは未同期で、75,488 bytes、SHA256 `3B929018983E0786FE0853B8F389EF8624A4A4BF6D10E14E4F29BE12551D6030`。実パスは`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`のみ使用する。Release、tag、新規migration ZIPは未作成。元112 fingerprintはNOT VERIFIED。本番同期、Release／tag、追加commit、旧staging再利用を独断で行わない。
+- Phase C-8／C-8S1 COMPLETE。C-8S2初回失敗、C-8S2R内容置換成功後ACL不一致停止、C-8S2A同期前ACL復元・検証COMPLETE、C-8S3本番Git commit COMPLETE。現在はC-8S4。
+- GitHub：Private repository `office138/FM-Obsidian-Customer-Identity`、branch `main`。C-8S4開始HEAD／origin/main `61dbc5cd9be5fc7fcb2a44d6d74467438d5ae376`、commit count 2、clean。文書第3commit IDは自己参照回避のため固定しない。
+- 本番Bridge：`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`、v8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、GitHub版とbyte一致、同期前ACLへ復元済み。
+- 検証：PS5.1／PS7 Parser errors 0 / 0、回帰24 / 24、安全8 / 8、COMPARE focused PASS、fixture 27 / 27、FileMaker scripts 3 / 3不変。
+- FileMaker実機：transport、NO_CHANGE、resolvedNotes参照パス更新PASS。エラーなし、FileMaker変更不要。
+- 本番側既存Git：`<VAULT_ROOT>\scripts`、HEAD `35c8bcb43fb2a2fc5a29ce69e43629b684a8bf2d`、commit count 3、clean、remote 0、push未実施。GitHubとは別履歴。
+- backup、TEMP、TestRoot、reportは保持。実絶対パス、実メール、ACL実名／SDDL、顧客情報は記載しない。
+- Release、tag、最新移行後Project State ZIPは未作成。元112 fingerprintはNOT VERIFIED。
+
+次工程は最新Project State Package作成・独立検証、その後のtag／Release判断と保持資産の削除判断。Bridge、FileMaker、backup、TEMPを独断で変更・削除しない。
 ## Google Antigravity用
 ### 一次実行担当：read-only調査・文書更新・承認済み小差分実装
 
