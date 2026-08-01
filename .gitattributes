@@ -1,0 +1,19 @@
+* text=auto
+
+# Repository-authored text
+*.md text eol=lf
+.gitignore text eol=lf
+.gitattributes text eol=lf
+
+# PowerShell defaults; repository-critical scripts override eol below.
+*.ps1 text
+*.psm1 text
+*.psd1 text
+
+/FM-Obsidian-Bridge-Payload.ps1 text eol=crlf
+/tools/package/*.ps1 text eol=lf
+/tests/windows/*.ps1 text eol=lf
+
+# Preserve byte-sensitive fixtures and FileMaker exports.
+tests/fixtures/** -text
+filemaker/** -text

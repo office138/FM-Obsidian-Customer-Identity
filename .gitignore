@@ -1,0 +1,42 @@
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Local evidence and generated reports
+LOCAL_EVIDENCE/
+**/LOCAL_EVIDENCE/
+_report.json
+_report.txt
+**/_report.json
+**/_report.txt
+
+# Temporary files
+*.tmp
+*.temp
+*.bak
+*.orig
+*.swp
+*~
+_payloadB64.tmp
+
+# PowerShell and test artifacts
+*.log
+TestResults/
+coverage/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Generated packages
+*.zip
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+
+# Git worktree or local tooling artifacts
+*.code-workspace
