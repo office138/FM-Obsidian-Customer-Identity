@@ -2,28 +2,36 @@
 
 ## GitHub移行
 
-- 新GitHub repositoryは、C-5D開始時点の67件にrepositoryメタファイルを加えた限定資産で新規作成する。
-- 既存ローカルGitの履歴は継承せず、commit `435cc9fd0b4ff7ec2d6dd839bdabae4053d6fba8`は移植しない。
-- GitHub repositoryはPrivate、初期collaboratorは0とする。
-- `main`を保護し、通常変更はfeature branch、小差分、focused test、full regression、diff確認、独立レビュー、ChatGPT最終レビューを経る。
-- 現在はGitHub repository、remote、commit、push、Releaseのいずれも未作成。
+- GitHub repository `office138/FM-Obsidian-Customer-Identity`をPrivateで作成済み。default branchは`main`。
+- remoteは`origin`、URLは`https://github.com/office138/FM-Obsidian-Customer-Identity.git`。credentialを埋め込まない。
+- Initial commitは`0708ce25ff073a84c9f178a1549810c91b9f605f`（`feat: establish FileMaker Obsidian customer identity project`）、親なし、73 files。
+- Author / Committerは`office138 <157262077+office138@users.noreply.github.com>`、Co-authored-byなし。
+- command-scoped `safe.directory`だけを使用し、global／system／localの永続`safe.directory`設定を追加しない。
+- GitHub Release、tag、最新GitHub移行後Project State ZIPは未作成。
+
+## 本番同期
+
+- GitHub版Bridgeと本番Bridgeの同期はGitHub側確認後の別工程とする。
+- 本番PowerShellは現時点で未変更。GitHub版は未反映。
+- 同期前に差分確定と本番バックアップを必須とする。
+- 反映後はPS5.1 Parser、24 / 24回帰、安全確認8 / 8、FileMaker実機影響確認を行う。
 
 ## 連携・データ保護
 
 - FileMakerを正本とし、FileMaker → Obsidianの片方向同期とする。
-- UUID完全一致検索を使用し、UUID識別子付きの顧客フォルダ名・管理対象ノート名へ常時正規化する。
-- 本番Vaultと顧客実データをGitHubへ入れない。
-- `filemaker/`書き出しと`tests/fixtures/`はbyte-sensitive資産としてGit変換を無効化する。
+- 本番Vault、顧客実データ、credential、token、環境固有絶対パスをGitHubへ入れない。
+- `filemaker/`と`tests/fixtures/`はbyte-sensitive資産としてGit変換を無効化する。
 - Package Buildは`-Build`明示時だけ実行し、既存ZIPを上書きしない。
 
-## 確定実装
+## 確定実装・検証
 
-Phase C-5C2Bで`tools/package/build_package_final.ps1`を確定した。Sizeは19,565 bytes、SHA256は`BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`。PowerShell 5.1 / 7 Parser、EvidenceなしBuild、EvidenceありBuild、危険EvidenceRoot拒否、source不変はいずれもPASS。
-
-Phase C-5C2Cで`FM-Obsidian-Bridge-Payload.ps1` Version 8.3.1を確定した。Sizeは76,970 bytes、SHA256は`DE1B0123C86954657F40B0B06E2321195D112AA7361AB76F7C47C7D4697714E6`。PowerShell 5.1 / 7 Parser、Windows回帰24 / 24、安全確認8 / 8はいずれもPASS。`UNEXPECTED_LOGIC_CHANGE`は0。
+- Package tool: 19,565 bytes、SHA256 `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`。
+- GitHub版Bridge: Version 8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`。
+- Parser: PS5.1 9 / 9、PS7 9 / 9 PASS。
+- Windows回帰: 24 / 24 PASS、安全確認8 / 8 PASS。
+- fixture 27 / 27、FileMaker 3 / 3 byte不変。
 
 ## 記録上の制約
 
-- 元112 fingerprintの期待値は`090EA5DD79E6C9AF1F3FA7E9CBB4074F68826FEC3010CAAE0436A96B6A6AA57D`だが、正規算出方式を復元できないため結果はNOT VERIFIEDを維持する。母集団112件、元資産書込み0。
-- `INVALID_PAYLOAD`、`DUPLICATE_UUID`、`WRITE_FAILED`、`POST_WRITE_VERIFICATION_FAILED`は現行実装では未確認。過去設計資料だけを根拠に実装へ追加しない。
-- `DUPLICATE_NOTE_TYPE`と`resolvedNotes`は本番との差分なしであり、今回個別の実動テスト確認済みとは表現しない。
+- 元112 fingerprintは期待値`090EA5DD79E6C9AF1F3FA7E9CBB4074F68826FEC3010CAAE0436A96B6A6AA57D`に対しNOT VERIFIED。正規算出方式を現存資料から復元できず、母集団112件、元資産書込み0。MATCHと記載しない。
+- 過去の36 / 36は過去試験記録であり、現在の回帰値として扱わない。

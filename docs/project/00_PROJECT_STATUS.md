@@ -1,8 +1,12 @@
 # 00_PROJECT_STATUS
 
-## GitHub移行トラック最新状態（Phase C-5D、2026-08-01）
+## GitHub移行トラック最新状態（Phase C-8、2026-08-01）
 
-C-5C2B / C-5C2C / C-5D COMPLETE、次工程C-5E。開始時67件を維持し、6件追加後73件。.git、GitHub、remote、commit、push、Releaseは未作成。確定値はpackage tool 19,565 bytes / `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`、bridge v8.3.1 76,970 bytes / `DE1B0123C86954657F40B0B06E2321195D112AA7361AB76F7C47C7D4697714E6`。PS5.1 / PS7 Parser、Windows回帰24 / 24、安全確認8 / 8 PASS、`UNEXPECTED_LOGIC_CHANGE` 0。`INVALID_PAYLOAD`、`DUPLICATE_UUID`、`WRITE_FAILED`、`POST_WRITE_VERIFICATION_FAILED`は現行実装では未確認。`DUPLICATE_NOTE_TYPE` / `resolvedNotes`は本番との差分なしだが個別実動テスト確認済みではない。元112 fingerprintはNOT VERIFIED（母集団112、書込み0）。
+本節が現状の正であり、以下の旧Project／Current Phase／Git節は履歴として扱う。Phase C-5C1〜C-7 COMPLETE。private repository `office138/FM-Obsidian-Customer-Identity`、branch `main`、remote `origin`（`https://github.com/office138/FM-Obsidian-Customer-Identity.git`）。initial commit `0708ce25ff073a84c9f178a1549810c91b9f605f`は73 files。Phase C-7完了時はlocal／origin一致、ahead 0／behind 0、clean。Phase C-8は文書10件限定の第2commit `docs: record GitHub repository state and next steps`をpushする（hashは自己参照回避のため本文に固定しない）。
+
+Bridgeはv8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、Git blob id `e45fc337fde2643f40026913d8ddf5a3a1342814`、blob SHA256 `548AD01CBD975A53442DBEBB72E67D3B961F7F8F21BF053254F8904B0CF4D9D3`。package toolは19,565 bytes、SHA256 `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`。Windows回帰24 / 24、安全確認8 / 8、PS5.1 Parser 9 / 9、PS7 Parser 9 / 9、fixtures 27 / 27、FileMaker scripts 3 / 3 PASS。
+
+次工程は「本番Bridge同期準備」。本番Bridgeは未同期で、現行本番ファイルは75,488 bytes、SHA256 `3B929018983E0786FE0853B8F389EF8624A4A4BF6D10E14E4F29BE12551D6030`。実パスは`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`のみで表す。Release、tag、新規migration ZIPは未作成。既存Packageは履歴資料。元112 fingerprintはNOT VERIFIED。
 
 ## Project
 FileMaker ↔ Obsidian 連携システム改修プロジェクト（社名・代表者変更対応、確定設計書 第4回修正版・改訂2 準拠）
@@ -32,7 +36,9 @@ Working Tree: 未追跡の旧PowerShell 3件（現行運用対象外）
 後片付け: Phase C-1.1で処分方針確定、削除実行前。再開基準として3件の存在を要求しない。
 ```
 
-## Current Status
+## Historical Project Status
+
+以下は過去フェーズの監査履歴であり、冒頭のPhase C-8状態を上書きしない。
 
 ### Phase 0（完了）
 Step 0-1〜0-4：静的調査・DDR調査・バックアップ作成・初回ベースラインcommit。詳細は`04_REVIEW_LOG.md`。

@@ -1,12 +1,18 @@
 # FileMaker ↔ Obsidian 社名・代表者変更対応プロジェクト
 
-## CURRENT STATE OVERRIDE（Phase C-5D、2026-08-01）
+## CURRENT STATE OVERRIDE（Phase C-8、2026-08-01）
 
-GitHub移行トラックはC-5C2B / C-5C2C / C-5D COMPLETE、次工程はC-5E。C-5D開始時67件を維持し、メタファイル6件追加後73件。.git、GitHub、remote、commit、push、Releaseは未作成。
+本節を再開時の正とし、下位の旧CURRENT STATE／再開地点／Next Taskは履歴として扱う。Phase C-5C1〜C-7はCOMPLETE。Phase C-8ではGitHub状態を文書へ反映し、文書限定の第2commitを作成・pushする。次工程は「本番Bridge同期準備」であり、本番同期そのものは未実施である。
 
-確定値：`tools/package/build_package_final.ps1` 19,565 bytes / `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`、`FM-Obsidian-Bridge-Payload.ps1` v8.3.1 / 76,970 bytes / `DE1B0123C86954657F40B0B06E2321195D112AA7361AB76F7C47C7D4697714E6`。PS5.1 / PS7 Parser、Windows回帰24 / 24、安全確認8 / 8 PASS、`UNEXPECTED_LOGIC_CHANGE` 0。`INVALID_PAYLOAD`、`DUPLICATE_UUID`、`WRITE_FAILED`、`POST_WRITE_VERIFICATION_FAILED`は現行実装では未確認。`DUPLICATE_NOTE_TYPE`と`resolvedNotes`は本番との差分なしだが、今回個別実動テスト確認済みではない。元112 fingerprintはNOT VERIFIED（母集団112件、書込み0）。
+- GitHub：private repository `office138/FM-Obsidian-Customer-Identity`、branch `main`、remote `origin`（`https://github.com/office138/FM-Obsidian-Customer-Identity.git`）。initial commitは`0708ce25ff073a84c9f178a1549810c91b9f605f`、73 files。Phase C-7完了時点でlocal／origin一致、ahead 0／behind 0、working tree clean。
+- Phase C-8 commit：messageは`docs: record GitHub repository state and next steps`。initial commitをparentとする第2commitであり、自己参照を避けるためcommit hashは本文へ固定しない。
+- Bridge：v8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、Git blob id `e45fc337fde2643f40026913d8ddf5a3a1342814`、blob SHA256 `548AD01CBD975A53442DBEBB72E67D3B961F7F8F21BF053254F8904B0CF4D9D3`。
+- Package tool：19,565 bytes、SHA256 `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`。
+- 検証：Windows回帰24 / 24、安全確認8 / 8、PS5.1 Parser 9 / 9、PS7 Parser 9 / 9、fixtures 27 / 27、FileMaker scripts 3 / 3 PASS。
+- 本番：Bridge未同期。本番ファイルは75,488 bytes、SHA256 `3B929018983E0786FE0853B8F389EF8624A4A4BF6D10E14E4F29BE12551D6030`。実パスは公開文書に記載せず`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`とする。
+- 未作成：Release、tag、新規migration ZIP。既存Packageは履歴資料であり再作成しない。元112 fingerprintはNOT VERIFIED。
 
-先にroot `README.md`と`handoff/`直下3文書を読むこと。C-5E完了前はGit・GitHub・Release・正式Package作成を禁止する。
+先にroot `README.md`と`handoff/`直下3文書を読むこと。本番Bridge同期、Release／tag作成、追加commit、旧stagingの再利用は、別の明示指示なしに実行しない。
 # ChatGPT用・再起動プロンプト
 
 ---

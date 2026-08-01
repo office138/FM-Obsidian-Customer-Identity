@@ -1,15 +1,19 @@
 # 06_TODO
 
-## GitHub移行トラック（Phase C-5D、2026-08-01）
+## GitHub移行トラック（Phase C-8、2026-08-01）
 
-- [x] C-5C2B：package tool 19,565 bytes / `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`、PS5.1 / PS7 Parser・Build安全性・source不変PASS。
-- [x] C-5C2C：bridge v8.3.1 76,970 bytes / `DE1B0123C86954657F40B0B06E2321195D112AA7361AB76F7C47C7D4697714E6`、PS5.1 / PS7 Parser・Windows回帰24 / 24・安全確認8 / 8 PASS、`UNEXPECTED_LOGIC_CHANGE` 0。
-- [x] C-5D：開始時67件を維持し、メタファイル6件追加後73件。.git、GitHub、remote、commit、push、Release未作成。
-- [ ] C-5E：全体のセキュリティ・byte・Parser・test・Package validation-only検証。
+- [x] C-5C1〜C-5D：GitHub向けsanitizationとrepositoryメタファイル整備。
+- [x] C-5E：73件全体のsecurity／byte／Parser／回帰／Package validation。
+- [x] C-6〜C-6D：Git初期化、73 filesのinitial commit `0708ce25ff073a84c9f178a1549810c91b9f605f`。
+- [x] C-7〜C-7C：private repository `office138/FM-Obsidian-Customer-Identity`へinitial push、local／origin一致。
+- [x] C-8：GitHub状態を文書10件へ反映し、第2commit `docs: record GitHub repository state and next steps`をpushする。
+- [ ] 次工程：本番Bridge同期準備。`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`への同期はまだ実施しない。
 
-4エラーコードは現行実装では未確認。`DUPLICATE_NOTE_TYPE` / `resolvedNotes`は本番との差分なしだが個別実動テスト確認済みではない。元112 fingerprintはNOT VERIFIED（母集団112、書込み0）。C-5E完了前はGit・GitHub・Release・正式Package作成禁止。
+Bridge確定値：v8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、Git blob id `e45fc337fde2643f40026913d8ddf5a3a1342814`、blob SHA256 `548AD01CBD975A53442DBEBB72E67D3B961F7F8F21BF053254F8904B0CF4D9D3`。package toolは19,565 bytes、SHA256 `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`。Windows回帰24 / 24、安全確認8 / 8、PS5.1 Parser 9 / 9、PS7 Parser 9 / 9、fixtures 27 / 27、FileMaker scripts 3 / 3 PASS。本番は75,488 bytes、SHA256 `3B929018983E0786FE0853B8F389EF8624A4A4BF6D10E14E4F29BE12551D6030`で未同期。Release、tag、新規migration ZIPは未作成。元112 fingerprintはNOT VERIFIED。
 
-## 完了
+## 過去の完了・TODO履歴
+
+以下は過去フェーズの監査履歴であり、冒頭のPhase C-8状態を上書きしない。
 - JSON関数7ケース実測
 - JSONNumber型コード実測
 - 数値1／文字列"1"判別確認

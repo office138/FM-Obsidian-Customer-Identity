@@ -1,10 +1,18 @@
 # 08_GIT_STATUS
 
-## GitHub移行トラック（Phase C-5D、2026-08-01）
+## GitHub移行トラック（Phase C-8、2026-08-01）
 
-C-5C2B / C-5C2C / C-5D COMPLETE、次工程C-5E。開始時67件を維持し、6件追加後73件。stagingには`.git`がなく、git init、git add、initial commit、branch、remote、push、GitHub repository、Releaseは未作成。確定値はpackage tool 19,565 bytes / `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`、bridge v8.3.1 76,970 bytes / `DE1B0123C86954657F40B0B06E2321195D112AA7361AB76F7C47C7D4697714E6`。PS5.1 / PS7 Parser、Windows回帰24 / 24、安全確認8 / 8 PASS。元112 fingerprintはNOT VERIFIED（母集団112、書込み0）。C-5E完了前にGit書込みを行わない。
+Phase C-5C1〜C-7 COMPLETE。repository URLは`https://github.com/office138/FM-Obsidian-Customer-Identity`、visibilityはPrivate、branchは`main`、remoteは`origin`（fetch／pushとも`https://github.com/office138/FM-Obsidian-Customer-Identity.git`、credential埋込みなし、remote 1件）。initial commitは`0708ce25ff073a84c9f178a1549810c91b9f605f`（short `0708ce2`、subject `feat: establish FileMaker Obsidian customer identity project`、parentなし、commit count 1）、73 files。Author／Committerは`office138 <157262077+office138@users.noreply.github.com>`、Co-authored-byなし。Phase C-7完了時はlocal HEAD＝origin/main＝initial commit、ahead 0／behind 0、upstream `origin/main`、working tree clean。
 
-Phase 1B read-only調査正式完了・Package更新時点（再確認日：2026-07-26、読取専用コマンドのみで確認、git add/commit等は一切実行していない）。
+Phase C-8は既存文書10件だけをstageし、`docs: record GitHub repository state and next steps`をinitial commitの子となる第2commitとしてpushする。自己参照を避けるため第2commit hashは本文へ固定しない。Bridgeはv8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、Git blob id `e45fc337fde2643f40026913d8ddf5a3a1342814`、blob SHA256 `548AD01CBD975A53442DBEBB72E67D3B961F7F8F21BF053254F8904B0CF4D9D3`。package toolは19,565 bytes、SHA256 `BC2A14DC0A4D450792CE67410FF069032B672E3803BD84393B6FF77A9557D5EE`。Windows回帰24 / 24、安全確認8 / 8、PS5.1 Parser 9 / 9、PS7 Parser 9 / 9、fixtures 27 / 27、FileMaker scripts 3 / 3 PASS。
+
+次工程は「本番Bridge同期準備」。本番Bridgeは未同期（75,488 bytes、SHA256 `3B929018983E0786FE0853B8F389EF8624A4A4BF6D10E14E4F29BE12551D6030`）で、公開文書では`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`のみ使用する。Release、tag、新規migration ZIPは未作成。元112 fingerprintはNOT VERIFIED。
+
+Git操作ではcommand-scoped `-c safe.directory=<REPOSITORY_ROOT>`だけを使用し、global／system／localの永続safe.directory設定は追加しない。Phase C-8完了後のcommit countは2となる。
+
+## Historical Git Status
+
+以下はPhase 1B時点の監査履歴であり、冒頭のPhase C-8状態を上書きしない。
 
 ## リポジトリ
 ```
