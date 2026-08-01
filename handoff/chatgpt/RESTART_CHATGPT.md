@@ -1,5 +1,17 @@
 # FileMaker ↔ Obsidian 社名・代表者変更対応プロジェクト
 
+## CURRENT STATE OVERRIDE（Phase C-9C、2026-08-01）
+
+本節を再開時の正とし、下位のPhase C-9A以前のCURRENT STATE／再開地点／Next Taskは履歴として扱う。
+
+- Phase C-9A／C-9B: COMPLETE。自己参照問題は`PACKAGE_METADATA/package_source_state.json`方式で解消済み。現在はPhase C-9C。
+- 最新正式Project State Package: `FM-Obsidian-Customer-Identity_20260801_1638_PRODUCTION_SYNC_VERIFIED_RESTART.zip`、376,266 bytes、SHA256 `7F1A25F892A716FFD688B8C2A945EA5A803C46F24332F781E9F2CA0D7CB0888C`、entries 78（payload 74／metadata 4）、FORMALLY_ADOPTED: YES。Build・独立検証・manifest／checksums／payload byte・Parser・ZIP validationはPASS、既知の問題なし。
+- Package source HEAD／origin/main: `0cde9fe982f028259a142a914e2fd9cd85d91166`、commit count 4、clean、tracked files 74。C-9C後の現行HEADはGitで確認し、Package source HEADと混同しない。
+- 直前正式Packageは過去正式証跡として保持。`FM-Obsidian-Customer-Identity_20260801_1602_PRODUCTION_SYNC_VERIFIED_RESTART.zip`は非正式FAIL候補であり、正式再開基準として使用しない。
+- 本番Bridgeは76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`でGitHub版とbyte一致。本番Git HEAD `35c8bcb43fb2a2fc5a29ce69e43629b684a8bf2d`、clean、remote 0。FileMaker実機、Windows回帰24 / 24、安全8 / 8、COMPARE focusedはPASS。
+- 次工程はPhase C-10 GitHub tag／Release準備。推奨候補はtag `v8.3.1-production-sync-verified`、Release title `v8.3.1 — Production Sync Verified`だが未確定。tag対象commitも次工程で判断する。
+- Release、tag、asset uploadは未実施。Package、Bridge、FileMaker、backup、TEMP、TestRoot、reportを独断で変更・削除しない。
+
 ## CURRENT STATE OVERRIDE（Phase C-9A、2026-08-01）
 
 本節を再開時の正とし、下位のPhase C-8S4以前のCURRENT STATE／再開地点／Next Taskは履歴として扱う。

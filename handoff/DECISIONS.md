@@ -10,6 +10,8 @@
 - tracked文書へ、その文書自身を含むPackage生成時の現行HEADを固定しない。
 - Package source repository stateは生成時だけ`PACKAGE_METADATA/package_source_state.json`へ動的記録する。このJSONはrepository payloadではないため、file_list／manifest／checksumsの自己参照除外集合へ加える。
 - Package自身の最終Size／SHA256はPackage内部へ記録せず、外部検証報告またはRelease情報で管理する。
+- `FM-Obsidian-Customer-Identity_20260801_1638_PRODUCTION_SYNC_VERIFIED_RESTART.zip`を最新正式Project State Packageとして採用する（376,266 bytes、SHA256 `7F1A25F892A716FFD688B8C2A945EA5A803C46F24332F781E9F2CA0D7CB0888C`、entries 78、payload 74、metadata 4）。
+- Package source HEADは`0cde9fe982f028259a142a914e2fd9cd85d91166`。C-9C後の現行HEADとは区別し、現行HEADはGitで確認する。
 
 ## 本番同期
 
@@ -36,8 +38,9 @@
 
 ## 次工程と保護
 
-- 次工程は最新Project State Package作成・独立検証、その後のtag／Release判断。
-- Release、tag、最新移行後Project State ZIPは未作成。
+- 次工程はPhase C-10 GitHub tag／Release準備。推奨候補はtag `v8.3.1-production-sync-verified`、Release title `v8.3.1 — Production Sync Verified`だが未確定であり、tag対象commitも次工程で判断する。
+- Releaseとtagは未作成。
+- 直前正式Packageは過去正式証跡として保持する。
 - Phase C-9非正式FAIL候補`FM-Obsidian-Customer-Identity_20260801_1602_PRODUCTION_SYNC_VERIFIED_RESTART.zip`（368,652 bytes、SHA256 `7D6A003BD87A132470922FF7F666DAEE4B338C7C023E214108321DC71521C8EB`）は保持し、編集・再利用・正式採用しない。
 - 正式Package、両バックアップ、TEMP、TestRoot、report、元112資産は保持する。
 - 実Windowsユーザー名、実メール、実絶対パス、ACL実名／SDDL、顧客名、UUID、credential、token、secretをrepository文書へ追加しない。

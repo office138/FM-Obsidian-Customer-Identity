@@ -1,5 +1,15 @@
 # PROJECT_STATUS（ChatGPT用・現状のみ）
 
+## GitHub移行トラック最新状態（Phase C-9C、2026-08-01）
+
+本節が現状の正であり、以下のPhase C-8S4以前の記述は履歴である。Phase C-9A／C-9BはCOMPLETE。自己参照問題は`PACKAGE_METADATA/package_source_state.json`方式で解消し、現在はPhase C-9C。
+
+最新正式Project State Packageは`FM-Obsidian-Customer-Identity_20260801_1638_PRODUCTION_SYNC_VERIFIED_RESTART.zip`、376,266 bytes、SHA256 `7F1A25F892A716FFD688B8C2A945EA5A803C46F24332F781E9F2CA0D7CB0888C`、entries 78（payload 74／metadata 4）、FORMALLY_ADOPTED: YES。Package source HEAD／origin/mainは`0cde9fe982f028259a142a914e2fd9cd85d91166`、commit count 4、clean、tracked files 74。Build、独立検証、manifest／checksums／payload byte、Parser、ZIP validationはPASSし、既知のPackage問題はない。Package自身のSize／SHA256は外部記録を正とする。
+
+直前正式Packageは過去正式証跡として保持し、20260801_1602 Packageは非正式FAIL候補として正式再開基準に使用しない。本番Bridge、本番Git、FileMaker、回帰検証の確定状態は不変。Releaseとtagは未作成。
+
+次工程はPhase C-10 GitHub tag／Release準備。推奨候補はtag `v8.3.1-production-sync-verified`、Release title `v8.3.1 — Production Sync Verified`だが未確定。Package source HEADとC-9C後HEADのどちらをtag対象にするかは次工程で明示判断する。
+
 ## GitHub移行トラック最新状態（Phase C-8S4、2026-08-01）
 
 本節が現状の正であり、以下の旧Phase 1B記述は履歴である。Phase C-8／C-8S1 COMPLETE。C-8S2初回失敗、C-8S2R内容置換成功後ACL不一致停止、C-8S2A同期前ACL復元・検証COMPLETE、C-8S3本番Git commit COMPLETE。現在はC-8S4。

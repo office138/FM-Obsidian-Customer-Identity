@@ -1,5 +1,15 @@
 # 00_PROJECT_STATUS
 
+## GitHub移行トラック最新状態（Phase C-9C、2026-08-01）
+
+本節が現状の正であり、以下のPhase C-9A以前の状態記述は履歴として扱う。Phase C-9A／C-9BはCOMPLETE。自己参照問題は`PACKAGE_METADATA/package_source_state.json`方式で解消し、現在はPhase C-9C。
+
+最新正式Project State Packageは`FM-Obsidian-Customer-Identity_20260801_1638_PRODUCTION_SYNC_VERIFIED_RESTART.zip`、376,266 bytes、SHA256 `7F1A25F892A716FFD688B8C2A945EA5A803C46F24332F781E9F2CA0D7CB0888C`、entries 78（payload 74／generated metadata 4）、FORMALLY_ADOPTED: YES。Package source HEAD／origin/mainは`0cde9fe982f028259a142a914e2fd9cd85d91166`、commit count 4、clean、tracked files 74。Build・独立検証・manifest 74 / 74・checksums 74 / 74・payload 74 / 74 byte・Parser・ZIP validationはPASSし、既知のPackage問題はない。C-9C後の現行HEADはGitで確認し、Package source HEADと混同しない。
+
+直前正式Packageは過去正式証跡として保持。`FM-Obsidian-Customer-Identity_20260801_1602_PRODUCTION_SYNC_VERIFIED_RESTART.zip`は非正式FAIL候補であり、正式再開基準として使用しない。本番Bridge、本番Git、FileMaker、回帰状態は不変。Releaseとtagは未作成。
+
+次工程はPhase C-10 GitHub tag／Release準備。推奨候補はtag `v8.3.1-production-sync-verified`、Release title `v8.3.1 — Production Sync Verified`だが未確定。Package source HEADとC-9C後HEADのどちらをtag対象にするかは次工程で明示判断する。
+
 ## GitHub移行トラック最新状態（Phase C-9A、2026-08-01）
 
 本節が現状の正であり、以下の旧Project／Current Phase／Git節は履歴として扱う。Phase C-8S4までCOMPLETE。Phase C-9はPackage生成・構造検証PASS後、tracked文書へ自身の現行commit IDを固定する自己参照要件により候補昇格を停止した。現在はPhase C-9A。

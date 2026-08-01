@@ -10,9 +10,11 @@
 - Phase C-8S3: COMPLETE（本番側既存GitへBridge単独commit）
 - Phase C-8S4: COMPLETE（GitHub文書commit・push）
 - Phase C-9: Package生成・構造検証PASS、source HEAD自己参照要件により候補昇格停止
-- 現在: Phase C-9A（Package source-state metadata方式へ移行）
+- Phase C-9A: COMPLETE（Package source-state metadata方式へ移行）
+- Phase C-9B: COMPLETE（source-state付きPackage生成・独立検証・正式採用）
+- 現在: Phase C-9C（正式採用Package情報の文書反映）
 
-本番同期と本番Git commitは完了している。Phase C-9のPackage候補は生成・構造検証に成功したが、tracked文書へ自身の現行commit IDを固定する自己参照要件を解消できないため非正式FAIL候補として保持し、再利用しない。Phase C-9Aでは現行HEADをtracked文書へ固定せず、Package生成時だけ`PACKAGE_METADATA/package_source_state.json`へ動的記録する。Package自身の最終Size／SHA256はPackage外部で管理する。次工程は更新後toolによる新Package作成・独立検証であり、Releaseとtagは未作成。
+本番同期と本番Git commitは完了している。Phase C-9初回候補は自己参照要件により昇格を停止したが、Phase C-9Aで現行HEADをtracked文書へ固定せず`PACKAGE_METADATA/package_source_state.json`へ動的記録する方式に変更し、Phase C-9Bで新PackageのBuild・独立検証・正式採用まで完了した。Package自身の最終Size／SHA256はPackage外部で管理する。次工程はPhase C-10 GitHub tag／Release準備。Releaseとtagは未作成。
 
 ## GitHub repository
 
@@ -25,6 +27,8 @@
 - 開始時ahead／behind: 0 / 0
 - 開始時working tree: clean
 - Phase C-8S4文書commitは第3commit。自己参照を避けるため、そのcommit IDは本文へ固定しない。
+- Package source HEAD: `0cde9fe982f028259a142a914e2fd9cd85d91166`（Package生成時のorigin/mainと同値、commit count 4、clean、tracked files 74）
+- Current repository HEAD: Gitで確認すること。C-9C文書commit IDは自己参照回避のため固定しない。
 
 ## 本番Bridge
 
@@ -121,10 +125,14 @@
 ## Package・次工程
 
 - 正式Package: 326,389 bytes、SHA256 `94D78049B6F17EF2A10CCB046F4F8081D7A962FF8BF0BC075B0880100EA95C06`
+- 最新正式Package: `FM-Obsidian-Customer-Identity_20260801_1638_PRODUCTION_SYNC_VERIFIED_RESTART.zip`、376,266 bytes、SHA256 `7F1A25F892A716FFD688B8C2A945EA5A803C46F24332F781E9F2CA0D7CB0888C`、entries 78（payload 74／generated metadata 4）、FORMALLY_ADOPTED: YES。Build・独立検証・manifest／checksums／payload byte・Parser・ZIP validationはPASS、既知のPackage問題なし。
+- 保存先表記: `<BACKUP_ROOT>\ChatGPT\Archive\FM-Obsidian-Customer-Identity_20260801_1638_PRODUCTION_SYNC_VERIFIED_RESTART.zip`
+- Package source-state: HEAD／origin/main `0cde9fe982f028259a142a914e2fd9cd85d91166`、commit count 4、tracked files 74、working tree clean、Package tool SHA256 `B6FBE3D32D8E2F53827F719C513FFA2E637A1B57732FAD6A4BAB73BDB9420ADF`。
+- 上記326,389 bytesの直前正式Packageは過去正式証跡として保持する。
 - Phase C-9非正式FAIL候補: `FM-Obsidian-Customer-Identity_20260801_1602_PRODUCTION_SYNC_VERIFIED_RESTART.zip`、368,652 bytes、SHA256 `7D6A003BD87A132470922FF7F666DAEE4B338C7C023E214108321DC71521C8EB`。保持し、編集・再利用・正式採用しない。
 - source repository state: 新Package生成時に`PACKAGE_METADATA/package_source_state.json`へ動的記録し、既存3 metadataと同じ自己参照除外集合として扱う。tracked文書へ生成時HEADを固定しない。
 - Package自身のSHA256: Package外部の検証報告またはRelease情報で管理する。
 - 元112 fingerprint: NOT VERIFIED、元資産書込み0
-- Release／tag／最新移行後Project State ZIP: 未作成
+- Release／tag: 未作成
 
-次工程候補は、更新後toolと新HEADを基準とする新Package作成、`package_source_state.json`を含む独立検証、tag／Release判断、保持中TEMP／backup／TestRootとE2Eテスト顧客の削除判断、旧staging／不要資産の後片付けである。未実施項目をCOMPLETEにしない。
+次工程はPhase C-10 GitHub tag／Release準備。tag名・Release名・notes・tag対象commit・Package assetを確認し、Release後に保持中TEMP／backup／TestRootとE2Eテスト顧客、旧staging／不要資産の整理を判断する。推奨候補はtag `v8.3.1-production-sync-verified`、Release title `v8.3.1 — Production Sync Verified`だが未確定。Package source HEADとC-9C後HEADのどちらをtag対象にするかは次工程で明示判断し、未実施項目をCOMPLETEにしない。

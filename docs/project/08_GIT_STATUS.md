@@ -1,5 +1,13 @@
 # 08_GIT_STATUS
 
+## GitHub移行トラック（Phase C-9C、2026-08-01）
+
+GitHub repositoryは`office138/FM-Obsidian-Customer-Identity`、Private、branch `main`、remote `origin`。Phase C-9A／C-9BはCOMPLETE。最新正式Packageは`FM-Obsidian-Customer-Identity_20260801_1638_PRODUCTION_SYNC_VERIFIED_RESTART.zip`（376,266 bytes、SHA256 `7F1A25F892A716FFD688B8C2A945EA5A803C46F24332F781E9F2CA0D7CB0888C`、entries 78、payload 74、metadata 4、FORMALLY_ADOPTED: YES）。
+
+Package source HEAD／origin/mainは`0cde9fe982f028259a142a914e2fd9cd85d91166`、commit count 4、ahead／behind 0 / 0、clean、tracked files 74。source HEADは`PACKAGE_METADATA/package_source_state.json`を正とする。C-9C文書commit IDは自己参照回避のため固定せず、現行HEADはGitで確認する。
+
+本番側既存GitはGitHubとは別履歴で、HEAD `35c8bcb43fb2a2fc5a29ce69e43629b684a8bf2d`、clean、remote 0。本番Bridge、FileMaker、回帰状態は不変。Releaseとtagは未作成。次工程はPhase C-10 GitHub tag／Release準備で、推奨tag／Release titleとtag対象commitは未確定。
+
 ## GitHub移行トラック（Phase C-9A、2026-08-01）
 
 GitHub repositoryは`office138/FM-Obsidian-Customer-Identity`、Private、branch `main`、remote `origin`。C-8S4の第3commit・pushまで完了した。Phase C-9AではPackage生成時のsource repository stateを`PACKAGE_METADATA/package_source_state.json`へ動的記録する。tracked文書へ、その文書自身を含む現行HEADを固定しない。

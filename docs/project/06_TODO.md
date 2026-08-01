@@ -1,6 +1,6 @@
 # 06_TODO
 
-## GitHub移行トラック（Phase C-9A、2026-08-01）
+## GitHub移行トラック（Phase C-9C、2026-08-01）
 
 - [x] C-5C1〜C-5D：GitHub向けsanitizationとrepositoryメタファイル整備。
 - [x] C-5E：73件全体のsecurity／byte／Parser／回帰／Package validation。
@@ -13,12 +13,15 @@
 - [x] C-8S4：本番同期結果を許可文書だけへ反映し、第3commitとしてpushする。
 - [x] C-9：Package生成・構造検証PASS後、現行HEAD自己参照要件により候補昇格停止。非正式FAIL候補は保持し、再利用しない。
 - [x] C-9A：tracked文書への現行HEAD固定を廃止し、Package生成時の`PACKAGE_METADATA/package_source_state.json`動的生成方式へ移行。
-- [ ] 更新後toolと新HEADを基準とする最新Project State Package作成。
-- [ ] source HEAD照合を含むPackage独立検証。
-- [ ] tag／Release作成判断。
+- [x] C-9B：source-state metadata付き最新Project State Package作成・独立検証・正式採用。
+- [x] C-9C：正式採用Package情報を許可文書へ反映し、文書commit・pushを行う。
+- [ ] Phase C-10：tag名・Release名・notes・tag対象commitを確定する。
+- [ ] 正式Package assetを再検証し、GitHub Releaseへ添付する。
+- [ ] Release assetのSize／SHA256とGitHub Web状態を独立確認する。
+- [ ] Release後の最終文書更新判断。
 - [ ] backup／TEMP／TestRoot／report、E2Eテスト顧客、旧staging／不要資産の削除判断。
 
-本番Bridge確定値：`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`、v8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、GitHub版とbyte一致、同期前ACLへ復元済み。Phase C-9非正式FAIL候補は368,652 bytes、SHA256 `7D6A003BD87A132470922FF7F666DAEE4B338C7C023E214108321DC71521C8EB`で保持し再利用しない。Release、tag、新Packageは未作成。元112 fingerprintはNOT VERIFIED。
+最新正式Package：`FM-Obsidian-Customer-Identity_20260801_1638_PRODUCTION_SYNC_VERIFIED_RESTART.zip`、376,266 bytes、SHA256 `7F1A25F892A716FFD688B8C2A945EA5A803C46F24332F781E9F2CA0D7CB0888C`、entries 78（payload 74／metadata 4）、Package source HEAD `0cde9fe982f028259a142a914e2fd9cd85d91166`、FORMALLY_ADOPTED: YES。直前正式Packageは過去証跡、20260801_1602 Packageは非正式FAIL候補として保持する。推奨tag／Release titleは候補であり未確定。Release、tagは未作成。元112 fingerprintはNOT VERIFIED。
 
 ## 過去の完了・TODO履歴
 

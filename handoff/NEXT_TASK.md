@@ -2,20 +2,20 @@
 
 ## 現在地点
 
-Phase C-8S4までCOMPLETE。本番Bridge同期、ACL復元、機械検証、FileMaker実機transport確認、本番側既存Git commit、GitHub文書commit・pushは完了した。Phase C-9はPackage生成・構造検証PASS後、現行HEADのtracked文書固定が自己参照になるため候補昇格を停止した。Phase C-9AではPackage生成時だけ`PACKAGE_METADATA/package_source_state.json`へsource repository stateを動的記録する方式へ移行する。
+Phase C-9A／C-9BまでCOMPLETE。自己参照問題は`PACKAGE_METADATA/package_source_state.json`方式で解消し、`FM-Obsidian-Customer-Identity_20260801_1638_PRODUCTION_SYNC_VERIFIED_RESTART.zip`（376,266 bytes、SHA256 `7F1A25F892A716FFD688B8C2A945EA5A803C46F24332F781E9F2CA0D7CB0888C`、entries 78、payload 74、metadata 4）はBuild・独立検証PASS後に最新正式Project State Packageとして採用済み。現在はPhase C-9C。
 
 ## 次工程
 
-Phase C-9A完了後は、次の順で判断する。
+Phase C-10 GitHub tag／Release準備として、次の順で判断する。
 
-1. 更新後toolと新HEADを基準に新しいProject State Packageを作成する。
-2. `package_source_state.json`のsource HEAD照合を含めてPackageを独立検証する。
-3. GitHub tag／Releaseの作成可否を判断する。
-4. 保持中の外部バックアップ、File.Replace backup、同期専用TEMP、回帰TestRoot、reportの削除可否を判断する。
-5. E2Eテスト顧客の削除可否を判断する。
-6. 旧staging／不要資産の後片付けを判断する。
+1. tag名・Release名・Release notesを確定する。
+2. Package source HEADとC-9C後HEADのどちらをtag対象とするか明示判断する。
+3. 正式Package assetを再検証する。
+4. GitHub Releaseを作成し、Package ZIPをassetとして添付する。
+5. Release assetのSize／SHA256とGitHub Web状態を独立確認する。
+6. Release後の最終文書更新、backup／TEMP／TestRoot、E2Eテスト顧客、旧staging／不要資産の整理を判断する。
 
-Phase C-9非正式FAIL候補`FM-Obsidian-Customer-Identity_20260801_1602_PRODUCTION_SYNC_VERIFIED_RESTART.zip`（368,652 bytes、SHA256 `7D6A003BD87A132470922FF7F666DAEE4B338C7C023E214108321DC71521C8EB`）は保持し、編集・再利用・正式採用しない。未実施の工程をCOMPLETEとして扱わない。Release、tag、新Packageはまだ作成しない。
+推奨候補はtag `v8.3.1-production-sync-verified`、Release title `v8.3.1 — Production Sync Verified`だが未確定。Phase C-9非正式FAIL候補`FM-Obsidian-Customer-Identity_20260801_1602_PRODUCTION_SYNC_VERIFIED_RESTART.zip`は保持し、正式再開基準として使用しない。Releaseとtagは未作成であり、未実施工程をCOMPLETEとして扱わない。
 
 ## 確定baseline
 
