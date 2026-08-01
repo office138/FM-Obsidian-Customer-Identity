@@ -1,10 +1,10 @@
 # 00_PROJECT_STATUS
 
-## GitHub移行トラック最新状態（Phase C-8S4、2026-08-01）
+## GitHub移行トラック最新状態（Phase C-9A、2026-08-01）
 
-本節が現状の正であり、以下の旧Project／Current Phase／Git節は履歴として扱う。Phase C-8／C-8S1 COMPLETE。C-8S2は初回atomic replacement失敗・本番未変更、C-8S2Rは内容置換成功後にACL不一致で停止、C-8S2Aは同期前ACL復元と検証までCOMPLETE、C-8S3は本番側既存Git commitまでCOMPLETE。現在はC-8S4。
+本節が現状の正であり、以下の旧Project／Current Phase／Git節は履歴として扱う。Phase C-8S4までCOMPLETE。Phase C-9はPackage生成・構造検証PASS後、tracked文書へ自身の現行commit IDを固定する自己参照要件により候補昇格を停止した。現在はPhase C-9A。
 
-GitHubはPrivate repository `office138/FM-Obsidian-Customer-Identity`、branch `main`。C-8S4開始HEAD／origin/mainは`61dbc5cd9be5fc7fcb2a44d6d74467438d5ae376`、commit count 2、clean。C-8S4文書commitは第3commitであり、自己参照回避のためIDを本文へ固定しない。
+GitHubはPrivate repository `office138/FM-Obsidian-Customer-Identity`、branch `main`。tracked文書へPackage生成時の現行HEADを固定しない。source repository stateは生成時だけ`PACKAGE_METADATA/package_source_state.json`へ動的記録し、既存3 metadataと同じ自己参照除外集合として扱う。Package自身の最終Size／SHA256はPackage外部で管理する。
 
 本番Bridgeは`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`へ同期完了。v8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、GitHub版とbyte一致。UTF-8 BOMあり、CRLF 1,453、末尾改行なし。同期前ACLへ復元済み、Attributes Archive、ADS追加0。
 
@@ -12,7 +12,7 @@ PS5.1／PS7 Parser errors 0 / 0、Windows回帰24 / 24、安全確認8 / 8、COM
 
 本番側既存Gitは`<VAULT_ROOT>\scripts`、HEAD `35c8bcb43fb2a2fc5a29ce69e43629b684a8bf2d`、subject `fix: resolve Python safely for compare mode`、commit count 3、clean、remote 0、push未実施。外部backup、File.Replace backup、同期専用TEMP、TestRoot、reportは保持。
 
-次工程は最新Project State Package作成・独立検証、その後のtag／Release判断と保持資産の削除判断。Release、tag、最新移行後Project State ZIPは未作成。元112 fingerprintはNOT VERIFIED。
+Phase C-9非正式FAIL候補`FM-Obsidian-Customer-Identity_20260801_1602_PRODUCTION_SYNC_VERIFIED_RESTART.zip`（368,652 bytes、SHA256 `7D6A003BD87A132470922FF7F666DAEE4B338C7C023E214108321DC71521C8EB`）は保持し、編集・再利用・正式採用しない。次工程は更新後toolと新HEADを基準とする新Package作成・source-state独立検証、その後のtag／Release判断と保持資産の削除判断。Release、tag、新Packageは未作成。元112 fingerprintはNOT VERIFIED。
 
 ## Project
 FileMaker ↔ Obsidian 連携システム改修プロジェクト（社名・代表者変更対応、確定設計書 第4回修正版・改訂2 準拠）
@@ -88,7 +88,7 @@ Google AntigravityによるVault YAML走査（956件走査）およびユーザ�
 1. **`fm_managed_tags` 重複値の扱い**: A. 自動重複除去 / B. `INVALID_MANAGED_TAGS` として中止（現時点の安全側候補はB）。
 2. **4顧客の同一noteType重複ノートの運用事前整理**: Vault実態として存在する4顧客の重複ノートの事前手動整理・運用対応の決定。
 3. **Project State文書12件のnoteType体系関連状態反映**: 対象Project State文書12件への反映・保存・保存後再読込確認・ChatGPT承認は、2026-07-27にすべて完了した。次はSnapshot／metadataへの再反映、新Project State Package作成・独立検証へ進む。
-4. **他3端末のPowerShell同一性**: 未実測の運用前提（FujitsuTX1320Win11端末のSHA256と同一前提）として進行中。
+4. **他3端末のPowerShell同一性**: 未実測の運用前提（<WINDOWS_HOST>端末のSHA256と同一前提）として進行中。
 5. **`MIGRATE_UUID`詳細設計**: payload構造・起動UI・ユーザー確認フラグ形式・response構造・snapshot／journal／rollback形式・保存先・復旧手順・index再構築タイミング等は未決定（`Project/03_DECISIONS.md`参照）。
 6. **noteType内部コード体系**（`USER_DECISION_PENDING`）: 設計書第6章5コード（`DESIGN_V4_1`）と現行6表示値（`CURRENT_OPERATIONAL_FACT`、Vault実在465件）が競合。ChatGPT推奨案B（`CHATGPT_RECOMMENDATION`）は未採用。
 7. **設計書第24章 Phase1関連4項目**（`DESIGN_RECOMMENDATION`・`USER_DECISION_PENDING`）: No.5（推奨A）／No.10（推奨B）／No.14（推奨B）／No.16（推奨B）。

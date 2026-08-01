@@ -21,7 +21,7 @@
 | Obsidian側変更の扱い | 会社名・カナ・代表者名・カナ・RANK・managed_byはFileMaker値を正本として同期する。本文・履歴欄は保持する。UUIDは、通常`SYNC_NOTE`ではUUID一致時の同一値再記録だけを許可し、UUID欠損ノートへの初回記録は専用`MIGRATE_UUID`の条件を満たす場合だけ許可する。UUID不一致の自動上書き・自動修復は禁止する（詳細は「Phase 1B-3 UUID統一仕様確定」節を正とする） | 一方向同期方針およびUUID is the Identity原則に基づく |
 | CHECK/APPLY双方向同期は実装対象外 | `recommend.winner`・`diffs[]`を用いた双方向更新判断・競合解決の実装は行わない | 一方向同期のみで業務要件を満たすため |
 | RANK1LYearの同期仕様 | Obsidianへ同期する正本として`RANK1LYear`（昨年度基準）を継続使用する | 実機確認（Phase 0.5）。業務上RANK1LYearが同期対象と確定 |
-| z_sysClientPCのhostname自動判別運用 | 現行運用を有効と認める（4端末：FujitsuTX1320Win11／DELL138／PRPDESK600／dynabook） | 実機確認（Phase 0.5） |
+| z_sysClientPCのhostname自動判別運用 | 現行運用を有効と認める（4端末：<WINDOWS_HOST>／DELL138／PRPDESK600／dynabook） | 実機確認（Phase 0.5） |
 | Base Elements Plug-Inのバージョン | 正式名称「Base Elements Plug-In」、バージョン5.0.0.2を全端末で使用する前提 | 実機確認（Phase 0.5） |
 | 他3端末のPowerShell同一性 | 「未確認の運用前提」として明記した上で、同一内容前提で進行する | ユーザー判断（1端末のみSHA256実測済み） |
 

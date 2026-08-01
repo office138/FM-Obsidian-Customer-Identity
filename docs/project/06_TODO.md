@@ -1,6 +1,6 @@
 # 06_TODO
 
-## GitHub移行トラック（Phase C-8S4、2026-08-01）
+## GitHub移行トラック（Phase C-9A、2026-08-01）
 
 - [x] C-5C1〜C-5D：GitHub向けsanitizationとrepositoryメタファイル整備。
 - [x] C-5E：73件全体のsecurity／byte／Parser／回帰／Package validation。
@@ -10,13 +10,15 @@
 - [x] C-8S1〜C-8S2A：本番Bridge backup、内容同期、同期前ACL復元、Parser／回帰／COMPARE検証。
 - [x] C-8S3：本番側既存GitへBridge 1件のみcommit。HEAD `35c8bcb43fb2a2fc5a29ce69e43629b684a8bf2d`、clean、remote 0。
 - [x] FileMaker実機：transport、NO_CHANGE、resolvedNotes参照パス更新PASS。
-- [ ] C-8S4：本番同期結果を許可文書だけへ反映し、第3commitとしてpushする。
-- [ ] 最新Project State Package作成。
-- [ ] Package独立検証。
+- [x] C-8S4：本番同期結果を許可文書だけへ反映し、第3commitとしてpushする。
+- [x] C-9：Package生成・構造検証PASS後、現行HEAD自己参照要件により候補昇格停止。非正式FAIL候補は保持し、再利用しない。
+- [x] C-9A：tracked文書への現行HEAD固定を廃止し、Package生成時の`PACKAGE_METADATA/package_source_state.json`動的生成方式へ移行。
+- [ ] 更新後toolと新HEADを基準とする最新Project State Package作成。
+- [ ] source HEAD照合を含むPackage独立検証。
 - [ ] tag／Release作成判断。
 - [ ] backup／TEMP／TestRoot／report、E2Eテスト顧客、旧staging／不要資産の削除判断。
 
-本番Bridge確定値：`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`、v8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、GitHub版とbyte一致、同期前ACLへ復元済み。PS5.1／PS7 Parser errors 0 / 0、Windows回帰24 / 24、安全8 / 8、COMPARE focused PASS、fixtures 27 / 27、FileMaker scripts 3 / 3不変。Release、tag、最新移行後Project State ZIPは未作成。元112 fingerprintはNOT VERIFIED。
+本番Bridge確定値：`<VAULT_ROOT>\scripts\FM-Obsidian-Bridge-Payload.ps1`、v8.3.1、76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`、GitHub版とbyte一致、同期前ACLへ復元済み。Phase C-9非正式FAIL候補は368,652 bytes、SHA256 `7D6A003BD87A132470922FF7F666DAEE4B338C7C023E214108321DC71521C8EB`で保持し再利用しない。Release、tag、新Packageは未作成。元112 fingerprintはNOT VERIFIED。
 
 ## 過去の完了・TODO履歴
 

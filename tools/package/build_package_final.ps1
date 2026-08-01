@@ -18,7 +18,10 @@ $metadataDirectory = "PACKAGE_METADATA"
 $fileListEntry = "$metadataDirectory/file_list.txt"
 $manifestEntry = "$metadataDirectory/manifest.tsv"
 $checksumsEntry = "$metadataDirectory/checksums_sha256.txt"
-$metadataEntries = @($fileListEntry, $manifestEntry, $checksumsEntry)
+$sourceStateEntry = "$metadataDirectory/package_source_state.json"
+$metadataEntries = @($fileListEntry, $manifestEntry, $checksumsEntry, $sourceStateEntry)
+$repositoryName = "office138/FM-Obsidian-Customer-Identity"
+$packageToolEntry = "tools/package/build_package_final.ps1"
 $noteText = -join @([char]0x30CE, [char]0x30FC, [char]0x30C8)
 $openText = -join @([char]0x958B, [char]0x304F)
 $internalText = -join @([char]0x5185, [char]0x90E8)
@@ -183,6 +186,75 @@ function Write-Utf8Lines([string]$Path, [string[]]$Lines) {
     [IO.File]::WriteAllLines($Path, $Lines, $encoding)
 }
 
+function Write-Utf8LfText([string]$Path, [string]$Text) {
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $normalized = ($Text -replace "`r`n", "`n").TrimEnd("`r", "`n") + "`n"
+    [IO.File]::WriteAllText($Path, $normalized, $encoding)
+}
+
+function Invoke-RepositoryGit([string]$Root, [string[]]$Arguments, [switch]$AllowEmpty) {
+    $safeRoot = (Get-FullPath $Root).Replace('\', '/')
+    $output = @(& git.exe -c "safe.directory=$safeRoot" -c 'core.quotepath=false' -C (Get-FullPath $Root) @Arguments 2>&1 | ForEach-Object { $_.ToString() })
+    if ($LASTEXITCODE -ne 0) {
+        throw "Git command failed: git $($Arguments -join ' '): $($output -join ' ')"
+    }
+    $trimmed = @($output | ForEach-Object { $_.Trim() } | Where-Object { $_.Length -gt 0 })
+    if (-not $AllowEmpty -and $trimmed.Count -eq 0) {
+        throw "Git command returned an empty value: git $($Arguments -join ' ')"
+    }
+    return $trimmed
+}
+
+function Get-PackageSourceState([string]$Root) {
+    $branch = @(Invoke-RepositoryGit $Root @('rev-parse', '--abbrev-ref', 'HEAD'))
+    $head = @(Invoke-RepositoryGit $Root @('rev-parse', 'HEAD'))
+    $originMain = @(Invoke-RepositoryGit $Root @('rev-parse', 'origin/main'))
+    $commitCountText = @(Invoke-RepositoryGit $Root @('rev-list', '--count', 'HEAD'))
+    $aheadBehindText = @(Invoke-RepositoryGit $Root @('rev-list', '--left-right', '--count', 'HEAD...origin/main'))
+    $status = @(Invoke-RepositoryGit $Root @('status', '--porcelain=v1', '--untracked-files=all') -AllowEmpty)
+    $trackedFiles = @(Invoke-RepositoryGit $Root @('ls-files'))
+    $originUrl = @(Invoke-RepositoryGit $Root @('remote', 'get-url', 'origin'))
+
+    if ($branch.Count -ne 1 -or $branch[0] -cne 'main') { throw "Package build requires branch main" }
+    if ($head.Count -ne 1 -or $head[0] -cnotmatch '^[0-9a-f]{40}$') { throw "Invalid source HEAD" }
+    if ($originMain.Count -ne 1 -or $originMain[0] -cnotmatch '^[0-9a-f]{40}$') { throw "Invalid origin/main commit ID" }
+    if ($head[0] -cne $originMain[0]) { throw "Package build requires HEAD to equal origin/main" }
+    if ($commitCountText.Count -ne 1 -or $commitCountText[0] -notmatch '^\d+$') { throw "Invalid source commit count" }
+    if ($aheadBehindText.Count -ne 1 -or $aheadBehindText[0] -notmatch '^\s*(\d+)\s+(\d+)\s*$') { throw "Invalid ahead/behind result" }
+    $ahead = [int]$Matches[1]
+    $behind = [int]$Matches[2]
+    if ($ahead -ne 0 -or $behind -ne 0) { throw "Package build requires ahead/behind 0/0" }
+    if ($status.Count -ne 0) { throw "Package build requires a clean working tree, including untracked files" }
+    if ($originUrl.Count -ne 1) { throw "Package build requires remote origin" }
+
+    $normalizedTrackedFiles = @($trackedFiles | ForEach-Object { ConvertTo-NormalizedEntryName $_ } | Sort-Object)
+    if ($normalizedTrackedFiles.Count -eq 0) { throw "Tracked file count must be greater than zero" }
+    if (@($normalizedTrackedFiles | Group-Object | Where-Object { $_.Count -ne 1 }).Count -ne 0) { throw "Duplicate tracked file path returned by Git" }
+
+    $toolPath = Join-Path (Get-FullPath $Root) $packageToolEntry.Replace('/', '\')
+    if (-not (Test-Path -LiteralPath $toolPath -PathType Leaf)) { throw "Package tool is missing: $packageToolEntry" }
+
+    return [PSCustomObject]@{
+        Json = [ordered]@{
+            schemaVersion = 1
+            packageType = 'REPOSITORY'
+            repository = $repositoryName
+            branch = $branch[0]
+            sourceHead = $head[0]
+            sourceOriginMain = $originMain[0]
+            sourceCommitCount = [int]$commitCountText[0]
+            ahead = $ahead
+            behind = $behind
+            workingTreeClean = $true
+            trackedFileCount = $normalizedTrackedFiles.Count
+            generatedAt = [DateTimeOffset]::Now.ToString('o', [Globalization.CultureInfo]::InvariantCulture)
+            packageToolPath = $packageToolEntry
+            packageToolSha256 = Get-SHA256 $toolPath
+        }
+        TrackedFiles = $normalizedTrackedFiles
+    }
+}
+
 function Copy-PackageFile($Item, [string]$PackageRoot) {
     $destination = Join-Path $PackageRoot $Item.Entry.Replace('/', '\')
     $parent = Split-Path -Parent $destination
@@ -202,6 +274,17 @@ function Read-ZipEntryText($Entry) {
     }
 }
 
+function Read-ZipEntryBytes($Entry) {
+    $stream = $Entry.Open()
+    try {
+        $memory = New-Object IO.MemoryStream
+        try {
+            $stream.CopyTo($memory)
+            return $memory.ToArray()
+        } finally { $memory.Dispose() }
+    } finally { $stream.Dispose() }
+}
+
 function Get-ZipEntrySHA256($Entry) {
     $stream = $Entry.Open()
     try {
@@ -215,6 +298,33 @@ function Get-ZipEntrySHA256($Entry) {
 function Convert-TextToLines([string]$Text) {
     if ([string]::IsNullOrEmpty($Text)) { return @() }
     return @(($Text -replace "`r`n", "`n").TrimEnd("`n") -split "`n")
+}
+
+function Test-PackageSourceStateJson([string]$Text, [byte[]]$Bytes) {
+    $propertyNames = @(
+        'schemaVersion', 'packageType', 'repository', 'branch', 'sourceHead', 'sourceOriginMain',
+        'sourceCommitCount', 'ahead', 'behind', 'workingTreeClean', 'trackedFileCount', 'generatedAt',
+        'packageToolPath', 'packageToolSha256'
+    )
+    if ($Bytes.Length -eq 0 -or ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF)) { throw "Package source-state JSON must be UTF-8 without BOM" }
+    if ($Bytes[$Bytes.Length - 1] -ne 0x0A -or $Bytes -contains 0x0D) { throw "Package source-state JSON must use LF and end with a newline" }
+    try { $state = $Text | ConvertFrom-Json -ErrorAction Stop } catch { throw "Invalid package source-state JSON: $($_.Exception.Message)" }
+    $actualNames = @($state.PSObject.Properties | ForEach-Object { $_.Name })
+    if (($actualNames -join "`n") -cne ($propertyNames -join "`n")) { throw "Package source-state JSON has unexpected properties or property order" }
+    if ([int]$state.schemaVersion -ne 1) { throw "Invalid package source-state schemaVersion" }
+    if ($state.packageType -cne 'REPOSITORY') { throw "Invalid package source-state packageType" }
+    if ($state.repository -cne $repositoryName) { throw "Invalid package source-state repository" }
+    if ($state.branch -cne 'main') { throw "Invalid package source-state branch" }
+    if ($state.sourceHead -cnotmatch '^[0-9a-f]{40}$' -or $state.sourceOriginMain -cnotmatch '^[0-9a-f]{40}$') { throw "Invalid package source-state commit ID" }
+    if ($state.sourceHead -cne $state.sourceOriginMain) { throw "Package source-state HEAD does not equal origin/main" }
+    if ($state.sourceCommitCount -isnot [int] -or $state.sourceCommitCount -lt 1) { throw "Invalid package source-state commit count" }
+    if ($state.ahead -isnot [int] -or $state.behind -isnot [int] -or $state.ahead -ne 0 -or $state.behind -ne 0) { throw "Invalid package source-state ahead/behind" }
+    if ($state.workingTreeClean -isnot [bool] -or -not $state.workingTreeClean) { throw "Invalid package source-state workingTreeClean" }
+    if ($state.trackedFileCount -isnot [int] -or $state.trackedFileCount -lt 1) { throw "Invalid package source-state tracked file count" }
+    $parsedGeneratedAt = [DateTimeOffset]::MinValue
+    if (-not [DateTimeOffset]::TryParseExact($state.generatedAt, 'o', [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::None, [ref]$parsedGeneratedAt)) { throw "Invalid package source-state generatedAt" }
+    if ($state.packageToolPath -cne $packageToolEntry) { throw "Invalid package source-state tool path" }
+    if ($state.packageToolSha256 -cnotmatch '^[A-F0-9]{64}$') { throw "Invalid package source-state tool SHA256" }
 }
 
 function Test-PackageZip([string]$ZipPath, [string[]]$AllowedEvidenceEntries = @()) {
@@ -243,6 +353,10 @@ function Test-PackageZip([string]$ZipPath, [string[]]$AllowedEvidenceEntries = @
         foreach ($metadata in $metadataEntries) {
             if (-not $byName.ContainsKey($metadata.ToLowerInvariant())) { throw "Package metadata is missing: $metadata" }
         }
+        $sourceStateBytes = @(Read-ZipEntryBytes $byName[$sourceStateEntry.ToLowerInvariant()])
+        $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
+        try { $sourceStateText = $strictUtf8.GetString([byte[]]$sourceStateBytes) } catch { throw "Package source-state JSON is not valid UTF-8" }
+        Test-PackageSourceStateJson $sourceStateText ([byte[]]$sourceStateBytes)
 
         $payloadNames = @($zip.Entries | ForEach-Object { $_.FullName.Replace('\', '/') } | Where-Object { $metadataEntries -notcontains $_ } | Sort-Object)
         Assert-RequiredEntries $payloadNames
@@ -313,9 +427,14 @@ function New-Package([string]$Root, [string]$Output, [string]$Name, [string]$Evi
     if (Test-Path -LiteralPath $finalPath) { throw "Output ZIP already exists; overwrite is forbidden: $finalPath" }
 
     $rootFull = Get-FullPath $Root
+    $sourceState = Get-PackageSourceState $rootFull
     $sourceBefore = Get-TreeSnapshot $rootFull
     $items = @(Get-RepositoryFiles $rootFull)
     Assert-RequiredEntries @($items | ForEach-Object { $_.Entry })
+    $repositoryEntries = @($items | ForEach-Object { $_.Entry } | Sort-Object)
+    if (($repositoryEntries -join "`n") -cne (@($sourceState.TrackedFiles) -join "`n")) {
+        throw "Package repository payload does not exactly match Git tracked files"
+    }
     $allowedEvidenceEntries = @()
 
     if (-not [string]::IsNullOrWhiteSpace($Evidence)) {
@@ -351,6 +470,8 @@ function New-Package([string]$Root, [string]$Output, [string]$Name, [string]$Evi
         Write-Utf8Lines (Join-Path $metadataRoot 'file_list.txt') $fileList
         Write-Utf8Lines (Join-Path $metadataRoot 'manifest.tsv') $manifest
         Write-Utf8Lines (Join-Path $metadataRoot 'checksums_sha256.txt') $checksums
+        $sourceStateJson = $sourceState.Json | ConvertTo-Json -Depth 3
+        Write-Utf8LfText (Join-Path $metadataRoot 'package_source_state.json') $sourceStateJson
 
         Add-Type -AssemblyName System.IO.Compression.FileSystem
         $archive = [IO.Compression.ZipFile]::Open($temporaryZip, [IO.Compression.ZipArchiveMode]::Create)

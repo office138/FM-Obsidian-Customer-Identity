@@ -1,14 +1,14 @@
 # 08_GIT_STATUS
 
-## GitHub移行トラック（Phase C-8S4、2026-08-01）
+## GitHub移行トラック（Phase C-9A、2026-08-01）
 
-GitHub repositoryは`office138/FM-Obsidian-Customer-Identity`、Private、branch `main`、remote `origin`。Phase C-8S4開始時はlocal HEAD＝origin/main＝`61dbc5cd9be5fc7fcb2a44d6d74467438d5ae376`、ahead 0／behind 0、commit count 2、working tree clean。C-8S4は許可文書だけを第3commit `docs: record production deployment and verification`としてpushする。自己参照を避けるため第3commit IDは本文へ固定しない。
+GitHub repositoryは`office138/FM-Obsidian-Customer-Identity`、Private、branch `main`、remote `origin`。C-8S4の第3commit・pushまで完了した。Phase C-9AではPackage生成時のsource repository stateを`PACKAGE_METADATA/package_source_state.json`へ動的記録する。tracked文書へ、その文書自身を含む現行HEADを固定しない。
 
 本番側既存GitはGitHubとは別履歴。repository表記`<VAULT_ROOT>\scripts`、branch `main`、HEAD `35c8bcb43fb2a2fc5a29ce69e43629b684a8bf2d`（short `35c8bcb`）、parent `435cc9fd0b4ff7ec2d6dd839bdabae4053d6fba8`、subject `fix: resolve Python safely for compare mode`、commit count 3、working tree clean、remote 0、push未実施。changed fileは`FM-Obsidian-Bridge-Payload.ps1` 1件。Author／Committerは`office138`、email非公開。
 
 本番Bridgeは76,954 bytes、SHA256 `7EFD3C5D94D9A4BAF98D422071C3C1843669E12B5DC30976D0957988E3F19D69`でGitHub版とbyte一致し、同期前ACLへ復元済み。PS5.1／PS7 Parser errors 0 / 0、回帰24 / 24、安全8 / 8、COMPARE focused、FileMaker実機transport／NO_CHANGE／resolvedNotes参照パス更新PASS。
 
-Git操作ではcommand-scoped `-c safe.directory=<REPOSITORY_ROOT>`だけを使用し、永続safe.directory設定を追加しない。Release、tag、最新移行後Project State ZIPは未作成。backup、TEMP、TestRoot、reportは保持。元112 fingerprintはNOT VERIFIED。
+Git操作ではcommand-scoped `-c safe.directory=<REPOSITORY_ROOT>`だけを使用し、永続safe.directory設定を追加しない。Phase C-9非正式FAIL候補は保持し、編集・再利用・正式採用しない。Release、tag、新Packageは未作成。backup、TEMP、TestRoot、reportは保持。元112 fingerprintはNOT VERIFIED。
 
 ## Historical Git Status
 

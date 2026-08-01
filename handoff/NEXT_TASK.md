@@ -2,20 +2,20 @@
 
 ## 現在地点
 
-Phase C-8S3までCOMPLETE。本番Bridge同期、ACL復元、機械検証、FileMaker実機transport確認、本番側既存GitへのBridge単独commitは完了した。Phase C-8S4では、この確定状態をGitHub文書10件へ反映し、文書だけを第3commitとしてpushする。
+Phase C-8S4までCOMPLETE。本番Bridge同期、ACL復元、機械検証、FileMaker実機transport確認、本番側既存Git commit、GitHub文書commit・pushは完了した。Phase C-9はPackage生成・構造検証PASS後、現行HEADのtracked文書固定が自己参照になるため候補昇格を停止した。Phase C-9AではPackage生成時だけ`PACKAGE_METADATA/package_source_state.json`へsource repository stateを動的記録する方式へ移行する。
 
 ## 次工程
 
-Phase C-8S4完了後は、次の順で判断する。
+Phase C-9A完了後は、次の順で判断する。
 
-1. 最新Project State Packageを作成する。
-2. Packageを独立検証する。
+1. 更新後toolと新HEADを基準に新しいProject State Packageを作成する。
+2. `package_source_state.json`のsource HEAD照合を含めてPackageを独立検証する。
 3. GitHub tag／Releaseの作成可否を判断する。
 4. 保持中の外部バックアップ、File.Replace backup、同期専用TEMP、回帰TestRoot、reportの削除可否を判断する。
 5. E2Eテスト顧客の削除可否を判断する。
 6. 旧staging／不要資産の後片付けを判断する。
 
-未実施の工程をCOMPLETEとして扱わない。Release、tag、最新移行後Project State ZIPはまだ作成しない。
+Phase C-9非正式FAIL候補`FM-Obsidian-Customer-Identity_20260801_1602_PRODUCTION_SYNC_VERIFIED_RESTART.zip`（368,652 bytes、SHA256 `7D6A003BD87A132470922FF7F666DAEE4B338C7C023E214108321DC71521C8EB`）は保持し、編集・再利用・正式採用しない。未実施の工程をCOMPLETEとして扱わない。Release、tag、新Packageはまだ作成しない。
 
 ## 確定baseline
 

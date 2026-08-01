@@ -8,9 +8,11 @@
 - Phase C-8S2R: 明示backup pathで内容置換成功、ACL不一致検出により停止
 - Phase C-8S2A: COMPLETE（同期前ACLへ復元、同期後検証PASS）
 - Phase C-8S3: COMPLETE（本番側既存GitへBridge単独commit）
-- 現在: Phase C-8S4
+- Phase C-8S4: COMPLETE（GitHub文書commit・push）
+- Phase C-9: Package生成・構造検証PASS、source HEAD自己参照要件により候補昇格停止
+- 現在: Phase C-9A（Package source-state metadata方式へ移行）
 
-本番同期と本番Git commitは完了している。Phase C-8S4はGitHub文書だけを更新・commit・pushする工程である。次工程は最新Project State Package作成と独立検証、その後のtag／Release判断。Release、tag、最新移行後Project State ZIPは未作成。
+本番同期と本番Git commitは完了している。Phase C-9のPackage候補は生成・構造検証に成功したが、tracked文書へ自身の現行commit IDを固定する自己参照要件を解消できないため非正式FAIL候補として保持し、再利用しない。Phase C-9Aでは現行HEADをtracked文書へ固定せず、Package生成時だけ`PACKAGE_METADATA/package_source_state.json`へ動的記録する。Package自身の最終Size／SHA256はPackage外部で管理する。次工程は更新後toolによる新Package作成・独立検証であり、Releaseとtagは未作成。
 
 ## GitHub repository
 
@@ -119,7 +121,10 @@
 ## Package・次工程
 
 - 正式Package: 326,389 bytes、SHA256 `94D78049B6F17EF2A10CCB046F4F8081D7A962FF8BF0BC075B0880100EA95C06`
+- Phase C-9非正式FAIL候補: `FM-Obsidian-Customer-Identity_20260801_1602_PRODUCTION_SYNC_VERIFIED_RESTART.zip`、368,652 bytes、SHA256 `7D6A003BD87A132470922FF7F666DAEE4B338C7C023E214108321DC71521C8EB`。保持し、編集・再利用・正式採用しない。
+- source repository state: 新Package生成時に`PACKAGE_METADATA/package_source_state.json`へ動的記録し、既存3 metadataと同じ自己参照除外集合として扱う。tracked文書へ生成時HEADを固定しない。
+- Package自身のSHA256: Package外部の検証報告またはRelease情報で管理する。
 - 元112 fingerprint: NOT VERIFIED、元資産書込み0
 - Release／tag／最新移行後Project State ZIP: 未作成
 
-次工程候補は、最新Project State Package作成、独立検証、tag／Release判断、保持中TEMP／backup／TestRootとE2Eテスト顧客の削除判断、旧staging／不要資産の後片付けである。未実施項目をCOMPLETEにしない。
+次工程候補は、更新後toolと新HEADを基準とする新Package作成、`package_source_state.json`を含む独立検証、tag／Release判断、保持中TEMP／backup／TestRootとE2Eテスト顧客の削除判断、旧staging／不要資産の後片付けである。未実施項目をCOMPLETEにしない。

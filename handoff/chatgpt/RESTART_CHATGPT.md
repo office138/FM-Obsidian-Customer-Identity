@@ -1,5 +1,16 @@
 # FileMaker ↔ Obsidian 社名・代表者変更対応プロジェクト
 
+## CURRENT STATE OVERRIDE（Phase C-9A、2026-08-01）
+
+本節を再開時の正とし、下位のPhase C-8S4以前のCURRENT STATE／再開地点／Next Taskは履歴として扱う。
+
+- Phase C-8S4までCOMPLETE。Phase C-9はPackage生成・構造検証PASS後、tracked文書へ自身の現行commit IDを固定する自己参照要件により候補昇格を停止した。
+- 非正式FAIL候補は`FM-Obsidian-Customer-Identity_20260801_1602_PRODUCTION_SYNC_VERIFIED_RESTART.zip`、368,652 bytes、SHA256 `7D6A003BD87A132470922FF7F666DAEE4B338C7C023E214108321DC71521C8EB`。保持し、編集・再利用・正式採用しない。
+- 正式仕様は、tracked文書へPackage生成時の現行HEADを固定せず、生成時だけ`PACKAGE_METADATA/package_source_state.json`へsource HEAD、origin/main、commit count、ahead／behind、clean、tracked file count、tool SHA256等を動的記録する方式。JSONは既存3 metadataと同じ自己参照除外集合とする。
+- Package自身の最終Size／SHA256はPackage内部へ記録せず、外部検証報告またはRelease情報で管理する。
+- 次工程は更新後toolと新HEADを基準とする新Package作成・独立検証。Release、tag、新Packageは未作成。
+- 本番Bridge、本番Git、FileMaker、fixture、backup、TEMP、TestRoot、reportは変更・削除しない。元112 fingerprintはNOT VERIFIEDのまま。
+
 ## CURRENT STATE OVERRIDE（Phase C-8S4、2026-08-01）
 
 本節を再開時の正とし、下位の旧CURRENT STATE／再開地点／Next Taskは履歴として扱う。

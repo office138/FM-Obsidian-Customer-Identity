@@ -7,6 +7,9 @@
 - Phase C-8S4開始baselineはHEAD＝origin/main＝`61dbc5cd9be5fc7fcb2a44d6d74467438d5ae376`、commit count 2、clean。
 - Phase C-8S4では許可文書だけを第3commitとしてpushし、Bridge、PowerShell、FileMaker、fixtureを変更しない。
 - 第3commit IDは自己参照を避けるため本文へ固定しない。
+- tracked文書へ、その文書自身を含むPackage生成時の現行HEADを固定しない。
+- Package source repository stateは生成時だけ`PACKAGE_METADATA/package_source_state.json`へ動的記録する。このJSONはrepository payloadではないため、file_list／manifest／checksumsの自己参照除外集合へ加える。
+- Package自身の最終Size／SHA256はPackage内部へ記録せず、外部検証報告またはRelease情報で管理する。
 
 ## 本番同期
 
@@ -35,6 +38,7 @@
 
 - 次工程は最新Project State Package作成・独立検証、その後のtag／Release判断。
 - Release、tag、最新移行後Project State ZIPは未作成。
+- Phase C-9非正式FAIL候補`FM-Obsidian-Customer-Identity_20260801_1602_PRODUCTION_SYNC_VERIFIED_RESTART.zip`（368,652 bytes、SHA256 `7D6A003BD87A132470922FF7F666DAEE4B338C7C023E214108321DC71521C8EB`）は保持し、編集・再利用・正式採用しない。
 - 正式Package、両バックアップ、TEMP、TestRoot、report、元112資産は保持する。
 - 実Windowsユーザー名、実メール、実絶対パス、ACL実名／SDDL、顧客名、UUID、credential、token、secretをrepository文書へ追加しない。
 - 元112 fingerprintはNOT VERIFIEDのままとし、MATCHと断定しない。
