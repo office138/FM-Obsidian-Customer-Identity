@@ -1,6 +1,6 @@
 ﻿<# =====================================================
 FM-Obsidian-Bridge-Payload.ps1
-Ver: 8.3.1 (2026-07-30) - Stored obs_RELPATH Priority Fix
+Ver: 9.0.3 (2026-08-13) - Folder Confirmation Contract Fix
 
 【概要】
 FileMaker（顧客管理システム）から送信されたJSONペイロードを受け取り、
@@ -11,12 +11,12 @@ ObsidianのVault内に該当顧客のMarkdownファイル（契約一覧、事�
 1. ペイロード解析: Base64エンコードされたJSONを解読し、顧客情報やアクションを取得。
 2. 正規化と検索: 会社名のゆらぎ（株式会社、(株)、㈲など）を吸収し、既存フォルダを正確に特定。
 3. YAMLフロントマターのインテリジェント更新: 既存のタグやUUIDを保持したまま、ランクや合計保険料などを安全に上書き。
-4. Pythonスクリプト連携 (COMPAREモード): 事故や契約の差分突合処理を外部Pythonスクリプト(`diff_checker.py`等)に委譲。
+4. Pythonスクリプト連携 (COMPAREモード): 事故や契約の差分突合処理を外部Pythonスクリプト(diff_checker.py等)に委譲。
 5. 新規作成時の自動フォーマット: 事故一覧などの場合、対応中/完了などの必要なテーブルテンプレートを自動挿入。
 
 【★ バージョン8.3.0 での最適化ポイント (Advanced URI → 標準URI) 】
 旧バージョンで使用していた「Advanced URIプラグイン + JavaScriptによるUI操作（フォルダの折りたたみ等）」を廃止し、
-Obsidian標準の `obsidian://open?vault=<name>&file=<relpath>` URIスキームで開く方式へ統一しました。
+Obsidian標準の obsidian://open?vault=<name>&file=<relpath> URIスキームで開く方式へ統一しました。
 ※ 公式CLIはAPIキー(OBSIDIAN_API_KEY)が全コマンドで必要なため、APIキー不要の標準URIスキームを採用。
 
 これにより、以下のメリットをもたらします。
@@ -26,18 +26,76 @@ Obsidian標準の `obsidian://open?vault=<name>&file=<relpath>` URIスキーム�
 
 【v8.2.0 → v8.3.0 修正内容】
 - Open-ObsidianFile: CLI方式(& obsidian vault=... open path=...) → 標準URIスキーム(Start-Process obsidian://open)に変更。
-  CLIはAPIキー(OBSIDIAN_API_KEY)が全コマンドで必要であり、環境構築のハードルが高いため断念。
 - Assert-ObsidianReady: CLI存在チェックを削除 → Obsidianプロセス起動チェックのみに簡素化。
-  （URIスキームはOSが自動的にObsidianを起動するため、CLI PATHは不要）
 
 【v8.3.1 修正内容】
 - FileMakerから渡されたobs_RELPATHが実在し、UUIDとnoteTypeが一致する場合、保存済みUUID付き正式ノートを最優先で採用。
 - UUID付き正式ノートが存在する状態でlegacy CHECKがUUIDなしノートを重複作成する問題を修正。
-- 保存済みパスは相対パス形状、01_顧客配下、実在、UUID一致、noteTypeアイコン接頭辞一致を検証してから採用。
+
+【★ v9.0.0 修正内容 (UUIDなし顧客フォルダ重複作成バグの恒久修正) 】
+- customer folder identityを「完全UUID(pk_CLIENT) == YAML frontmatterのUUID」でのみ確定する方式へ統一。
+  顧客名/正規化名/フォルダ名/UUID先頭8文字/folderNameConfirmed/obs_RELPATHはidentity authorityにしない。
+- canonical顧客フォルダ名を "<Sanitize-LeafNameされた顧客名>_[<pk_CLIENT先頭8文字大文字>]" に一元化し、
+  新規フォルダ作成・NEED_FOLDER_CONFIRMのsuggest・作成直前の再確認をすべてcanonical名に固定。
+- folderNameConfirmedは「新規作成継続のgo-ahead」としてのみ扱い、命名authorityを剥奪。
+- legacy顧客フォルダ(UUIDなし)に完全UUID証拠がある場合は、別フォルダを作らずcanonical名へRename昇格。
+  完全UUID証拠が無いlegacyはLEGACY_FOLDER_NEEDS_MIGRATIONで安全停止。
+- canonical名フォルダが存在しても完全UUID証拠が無い場合はCANONICAL_FOLDER_NO_UUID_EVIDENCEで安全停止(UUID8衝突対策)。
+- customer identity discoveryは再帰検索可。ただし正式managed noteのduplicate判定はcustomer folder直下のみ。
+  サブフォルダ内の同一UUID+同一noteTypeはdirect-child件数へ混ぜず、MANAGED_NOTE_OUT_OF_SCOPEで安全停止。
+- folder evidence状態(Matched/NoEvidence/Conflict/InvalidYaml/InvalidUuid)を明示的に区別し、
+  InvalidYaml → YAML_BODY_BOUNDARY_UNRESOLVED / Conflict → FOLDER_UUID_MIXED / InvalidUuid → FOLDER_UUID_INVALID で停止。
+- obs_RELPATHは「note locator hint」に格下げ。検証は弱体化させず、folder identity確定後に最終フォルダ上で再検証して採用。
+- 新規ノート作成をNew-Item -Forceから FileMode::CreateNew へ変更し、既存ファイルの破壊を防止。
+
+【★ v9.0.1 修正内容 (残存MAJOR 2件のピンポイント修正) 】
+- MAJOR-1: 通常managed note解決から「filename fuzzy候補をUUID未検証で$targetAbsへ採用する経路」を廃止。
+- MAJOR-2: Get-UciResolvedNotesのduplicate件数およびresolvedNotes配列をcustomer folder直下(direct-child)のみに限定。
+  「direct-child 1件 + subfolder 1件」でDUPLICATE_NOTE_TYPEになる誤検出(T18)を解消。
+
+【★ v9.0.2 修正内容 (残存2点のピンポイント修正) 】
+- FIX-1: 「UUID未検証のcanonicalFileを$targetAbs経由で既存managed noteとして採用してしまう抜け道」を完全に封鎖した。
+  v9.0.1では direct-child UUID一致0件のときに
+      $targetAbs = Join-Path $currentFolderFull $canonicalFile
+  としていたため、canonicalFileと同名の既存ファイルが存在し、かつそのYAML UUIDがpk_CLIENTと
+  一致していない(あるいはUUIDキー自体が無い)場合でも、後続の
+      if ($targetAbs -and (Test-Path -LiteralPath $targetAbs)) { Update-Yaml-Robust $targetAbs ... }
+  へ流れ、未検証ファイルへ対象顧客のUUIDを書き込む可能性が残っていた。
+  本版では、$targetAbsへ設定してよいのは
+      customer folder直下 + noteType接頭辞一致 + YAML完全UUID == pk_CLIENT
+  を満たしUUID検証済みのファイル(Get-UuidNoteTypeMatches / 再検証済みobs_RELPATH hint)だけとし、
+  direct-child UUID一致0件の場合は $targetAbs = $null のままにする。
+  新規CREATE候補pathは別変数 $newCandidateAbs へ完全分離し、$targetAbsとは絶対に混同しない。
+  $newCandidateAbsが既に実在する場合は、そのファイルを既存managed noteとして採用せず、
+  TARGET_NOTE_FILENAME_CONFLICT でFail-closedする(既存ファイルへUUIDを書き込む「正規化」は行わない)。
+- FIX-2: v9.0.1でfuzzy候補検出時に追加したWrite-Host診断出力を削除した。
+  FileMakerとの通常応答契約(OK|... / NG|...)へ新規の診断出力を混在させない。
+  fuzzy候補は内部変数($fuzzyCandidates)へ保持するのみとし、必要な場合はNG detailsへ含める。
+
+【★ v9.0.3 修正内容 (folderNameConfirmed契約不整合の最終修正 / 変更点は1箇所のみ) 】
+- folderNameConfirmedを命名authorityには戻さず、canonicalFolderNameとの一致確認を必須化。
+  不一致時はFOLDER_CONFIRMATION_MISMATCHでFail-closed。
+- 背景: v9.0.2までは
+      $hasGoAhead = ($payload.ContainsKey("folderNameConfirmed") -and 非空)
+  として「非空なら何でもgo-ahead」と扱っていた。現行FileMaker側(EXT-obs_OBSノート-開く)は
+  NEED_FOLDER_CONFIRM時に $$obsFolderNameInput を編集可能フィールドとして提示し、その入力値を
+  folderNameConfirmedとして再送するUI契約を維持している。そのため、オペレータが候補一覧から
+  canonical名以外(例: 部分一致で候補表示された "ABC商事")を選択・確定しても、PowerShellは
+  その値を黙って捨ててcanonical名("ABC_[12345678]")でCREATEしてしまい、
+  「オペレータが別の既存フォルダを選んだのに無言で無視して別フォルダを作る」状態になっていた。
+- 対応: folderNameConfirmedは引き続きnaming authorityにしない(値からフォルダ名を組み立てない)。
+  ただしgo-aheadとして受け入れる前に、既存Sanitize-LeafNameを通した値が
+  canonicalFolderNameとOrdinalIgnoreCaseで一致することを必須条件とする。
+  一致した場合のみ$hasGoAhead = $trueとし、不一致の場合は
+      NG|FOLDER_CONFIRMATION_MISMATCH|...
+  で即時停止する。不一致時は、確認された名前のフォルダを既存採用しない/そこへ移動しない/
+  canonicalフォルダも作成しない/ノートも作成しない(完全Fail-closed)。
+- 新規helper関数は追加していない(既存Sanitize-LeafName / Out-NGのみを使用)。
+- 正常系(NEED_FOLDER_CONFIRMのsuggestであるcanonical名をそのまま確認して再送する流れ)は不変。
 
 【前提条件】
 - 対象Vaultが Obsidian に既知のVaultとして登録済みであること。
-- Obsidian の `obsidian://` URIスキームがOSに登録されていること（通常はインストール時に自動登録）。
+- Obsidian の obsidian:// URIスキームがOSに登録されていること（通常はインストール時に自動登録）。
 ===================================================== #>
 
 [CmdletBinding()]
@@ -379,6 +437,8 @@ function Get-UuidNoteTypeMatches([string]$folderPath, [string]$iconPrefix, [stri
   # 重複ノート作成防止(2026-07-29回帰修正)。
   # 指定フォルダ内で、指定アイコン接頭辞(Get-IconPrefixの戻り値)のファイル名パターンに一致し、
   # かつYAML frontmatter内の"UUID:"キーが指定UUIDと一致する既存ノートを列挙する。
+  # ※この関数は非再帰(customer folder直下のみ)であり、正式managed noteのduplicate判定・
+  #   採用判定における唯一のauthorityである(v9.0.1で位置付けを明確化、v9.0.2で徹底)。
   # UUID一致判定はGet-YamlHeaderLines/Get-YamlScalarValueという既存の共通関数をそのまま再利用し、
   # 本文中の文字列一致など、frontmatter外のUUID一致は判定対象にしない。
   # UUIDが空の場合は判定不能として空配列を返す(呼び出し側は0件と同様に扱われ、既存挙動を維持する)。
@@ -515,19 +575,39 @@ function New-UCIExtendedNgResponse([string]$requestIdRaw, [string]$code, [string
   return ($resp | ConvertTo-Json -Depth 5)
 }
 
-# ---- resolvedNotes生成(2026-07-30追加) ----
+# ---- resolvedNotes生成(2026-07-30追加 / 2026-08-13 v9.0.1 direct-child限定へ修正) ----
 # UPDATE_CUSTOMER_IDENTITY成功応答用に、最終実体(実在ファイル)からノート一覧を生成する。
 # 予定値(リネーム計画)からは組み立てず、最終顧客フォルダを再列挙して
 # frontmatter "UUID:"のpk_CLIENT完全一致 + 既存noteType判定(Get-UciKnownPrefixMap経由)で
 # 管理対象と識別できたノートだけを対象とする。本文中のUUIDは判定しない。
+#
+# ★ v9.0.1 (MAJOR-2): 正式managed noteのscopeは「customer folder直下(direct-child)」である。
+#   従来は -Recurse でtree全体を列挙し、サブフォルダ内の同一noteTypeまで
+#   duplicateNoteTypeのカウントへ混入させていたため、
+#     customer/⬛その他_A.md (UUID=X)
+#     customer/Sub/⬛その他_B.md (UUID=X)
+#   のような構成で direct-child は1件しかないのに DUPLICATE_NOTE_TYPE と誤検出していた(T18)。
+#   本版では列挙自体を非再帰(direct-childのみ)に限定し、resolvedNotes配列・duplicate件数の
+#   双方をdirect-childの正式managed noteだけで構成する。
+#   サブフォルダ内の同一UUID+同一noteTypeはここでは一切カウントせず、
+#   必要な場合は呼び出し側/専用helper(Get-UciOutOfScopeManagedNotes)で
+#   MANAGED_NOTE_OUT_OF_SCOPEとして扱う。
+#   ※ v9.0.2 / v9.0.3ではこの関数を一切変更していない(direct-child化・T18対応をそのまま維持)。
+#
 # 同一noteTypeが2件以上ある場合はduplicateNoteTypeを返し、呼び出し側で
 # DUPLICATE_NOTE_TYPE停止させる(曖昧なresolvedNotesは返さない)。
 # 出力順序はnoteType→relativePathの安定ソート。
 function Get-UciResolvedNotes([System.IO.DirectoryInfo]$folderInfo, [string]$pkClient, $prefixMap) {
   $entries = [System.Collections.ArrayList]::new()
   $byType = @{}
-  $files = Get-ChildItem -LiteralPath $folderInfo.FullName -Filter "*.md" -File -Recurse -ErrorAction SilentlyContinue
+  # ★ v9.0.1: -Recurse を使用しない(direct-childのみが正式managed note scope)。
+  $files = Get-ChildItem -LiteralPath $folderInfo.FullName -Filter "*.md" -File -ErrorAction SilentlyContinue
   foreach ($f in $files) {
+    # 二重防御: 列挙が非再帰であっても、親ディレクトリが顧客フォルダ直下であることを明示確認する。
+    if (-not [string]::Equals(
+          (Split-Path -Parent $f.FullName),
+          $folderInfo.FullName,
+          [System.StringComparison]::OrdinalIgnoreCase)) { continue }
     $hdr = Get-YamlHeaderLines $f.FullName
     if ($null -eq $hdr) { continue }
     $u = Get-YamlScalarValue $hdr "UUID:"
@@ -558,10 +638,14 @@ function Get-UciResolvedNotes([System.IO.DirectoryInfo]$folderInfo, [string]$pkC
   return @{ entries = $sorted; duplicateNoteType = $null; duplicateCount = 0 }
 }
 
-# ---- legacy CHECK最終防衛線用(2026-07-30追加) ----
+# ---- 再帰版UUID+noteType検索(2026-07-30追加 / 2026-08-13 用途限定) ----
 # 既存Get-UuidNoteTypeMatches(単一フォルダ・非再帰)と同一の判定規則
 # (アイコン接頭辞のファイル名パターン + frontmatter "UUID:"完全一致のみ)を、
 # 指定ルート配下全体(-Recurse)へ広げた再帰版。独自のnoteType判定は追加しない。
+# ※重要(v9.0.0/v9.0.1/v9.0.2/v9.0.3): この再帰版の結果を「1件見つかったので正式managed noteとして
+#   自動採用」する用途へ使ってはならない。正式managed noteのduplicate判定・採用判定は
+#   必ずcustomer folder直下(非再帰のGet-UuidNoteTypeMatches)を主判定とする。
+#   本関数はscope外ノート(サブフォルダ)の検出・診断のためだけに使用する。
 function Get-UuidNoteTypeMatchesInTree([string]$rootPath, [string]$iconPrefix, [string]$uuid) {
   $matched = [System.Collections.ArrayList]::new()
   if ([string]::IsNullOrWhiteSpace($uuid)) { return ,$matched.ToArray() }
@@ -574,11 +658,143 @@ function Get-UuidNoteTypeMatchesInTree([string]$rootPath, [string]$iconPrefix, [
       [void]$matched.Add($f.FullName)
     }
   }
-  return $matched.ToArray()
+  return ,$matched.ToArray()
 }
 
 function Test-UciUuidFormat([string]$s) {
   return ($s -match '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$')
+}
+
+# ========================================================
+# v9.0.0 追加: customer folder identity 解決基盤
+#
+# 顧客identityは「YAML frontmatterの完全UUID == FileMaker pk_CLIENTの完全UUID」でのみ確定する。
+# 顧客名/正規化名/フォルダ名/UUID先頭8文字/folderNameConfirmed/obs_RELPATHはauthorityにしない。
+#
+# identity discoveryは 01_顧客 配下の再帰検索を許容する(サブフォルダ内ノートも
+# 「その顧客フォルダに属する証拠」としては有効)。ただし正式managed noteの
+# 採用・duplicate判定は customer folder 直下のみで行う(Get-UuidNoteTypeMatches)。
+# ========================================================
+
+# canonical顧客フォルダ名を生成する。既存Sanitize-LeafName / Get-UciUuidSuffixのみを使用する。
+function Get-CanonicalCustomerFolderName([string]$nameRaw, [string]$pkClient) {
+  return ((Sanitize-LeafName $nameRaw "NO_NAME") + (Get-UciUuidSuffix $pkClient))
+}
+
+# 指定フォルダのevidence状態を評価する。
+# 戻り値(hashtable):
+#   state          ... "Matched" / "NoEvidence" / "Conflict" / "InvalidYaml" / "InvalidUuid"
+#   matchedCount   ... 対象完全UUIDと一致したノート件数(再帰、frontmatterのみ判定)
+#   detailPath     ... 停止理由に関係するファイルパス(あれば)
+#   detailValue    ... 停止理由に関係する値(別UUID・不正UUID文字列など)
+# 優先順位: InvalidYaml > Conflict > InvalidUuid > Matched > NoEvidence
+# ※ "Matched + InvalidUuid" は Matched成功にしない(InvalidUuidを優先して停止させる)。
+function Get-UciFolderEvidence([string]$folderPath, [string]$pkClient) {
+  $result = @{ state = "NoEvidence"; matchedCount = 0; detailPath = $null; detailValue = $null }
+  $matchedCount = 0
+  $invalidYamlPath = $null
+  $conflictPath = $null; $conflictValue = $null
+  $invalidUuidPath = $null; $invalidUuidValue = $null
+
+  $files = Get-ChildItem -LiteralPath $folderPath -Filter "*.md" -File -Recurse -ErrorAction SilentlyContinue
+  foreach ($f in $files) {
+    $hdr = Get-YamlHeaderLines $f.FullName
+    if ($null -eq $hdr) {
+      if ($null -eq $invalidYamlPath) { $invalidYamlPath = $f.FullName }
+      continue
+    }
+    $u = Get-YamlScalarValue $hdr "UUID:"
+    if ([string]::IsNullOrWhiteSpace($u)) { continue }
+    if (-not (Test-UciUuidFormat $u)) {
+      if ($null -eq $invalidUuidPath) { $invalidUuidPath = $f.FullName; $invalidUuidValue = $u }
+      continue
+    }
+    if ($u.ToUpperInvariant() -eq $pkClient.ToUpperInvariant()) {
+      $matchedCount = $matchedCount + 1
+    } else {
+      if ($null -eq $conflictPath) { $conflictPath = $f.FullName; $conflictValue = $u }
+    }
+  }
+
+  $result.matchedCount = $matchedCount
+  if ($null -ne $invalidYamlPath) {
+    $result.state = "InvalidYaml"; $result.detailPath = $invalidYamlPath
+    return $result
+  }
+  if ($null -ne $conflictPath) {
+    $result.state = "Conflict"; $result.detailPath = $conflictPath; $result.detailValue = $conflictValue
+    return $result
+  }
+  if ($null -ne $invalidUuidPath) {
+    $result.state = "InvalidUuid"; $result.detailPath = $invalidUuidPath; $result.detailValue = $invalidUuidValue
+    return $result
+  }
+  if ($matchedCount -ge 1) { $result.state = "Matched" }
+  return $result
+}
+
+# 完全UUIDに一致するノートを 01_顧客 配下から再帰検索し、
+# それらが属する「01_顧客直下のcustomer folder」を一意に特定する。
+# 戻り値(hashtable):
+#   folders      ... DirectoryInfoの配列(0件/1件/複数件)
+#   unresolved   ... 01_顧客直下として帰属解決できなかったノートパス($nullなら無し)
+function Get-UciUuidMatchedCustomerFolders([string]$custRootPath, [string]$pkClient) {
+  $out = @{ folders = @(); unresolved = $null }
+  if ([string]::IsNullOrWhiteSpace($pkClient)) { return $out }
+  $custRootInfo = Get-Item -LiteralPath $custRootPath
+  $map = @{}
+  $files = Get-ChildItem -LiteralPath $custRootPath -Filter "*.md" -File -Recurse -ErrorAction SilentlyContinue
+  foreach ($f in $files) {
+    $hdr = Get-YamlHeaderLines $f.FullName
+    if ($null -eq $hdr) { continue }
+    $u = Get-YamlScalarValue $hdr "UUID:"
+    if ([string]::IsNullOrWhiteSpace($u)) { continue }
+    if (-not (Test-UciUuidFormat $u)) { continue }
+    if ($u.ToUpperInvariant() -ne $pkClient.ToUpperInvariant()) { continue }
+    $child = Resolve-UciDirectChildFolder $custRootInfo $f.FullName
+    if ($null -eq $child) {
+      if ($null -eq $out.unresolved) { $out.unresolved = $f.FullName }
+      continue
+    }
+    $key = $child.FullName.ToUpperInvariant()
+    if (-not $map.ContainsKey($key)) { $map[$key] = $child }
+  }
+  $out.folders = @($map.Values)
+  return $out
+}
+
+# 指定customer folder配下のうち、サブフォルダ側にのみ存在する
+# 同一UUID+同一noteTypeノート(scope外)を列挙する。
+# direct-child duplicate件数へは絶対に混ぜない。
+function Get-UciOutOfScopeManagedNotes([string]$folderPath, [string]$iconPrefix, [string]$uuid) {
+  $outOfScope = [System.Collections.ArrayList]::new()
+  if ([string]::IsNullOrWhiteSpace($uuid)) { return ,$outOfScope.ToArray() }
+  $all = @(Get-UuidNoteTypeMatchesInTree $folderPath $iconPrefix $uuid)
+  foreach ($p in $all) {
+    $parent = Split-Path -Parent $p
+    if (-not [string]::Equals($parent, $folderPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+      [void]$outOfScope.Add($p)
+    }
+  }
+  return ,$outOfScope.ToArray()
+}
+
+# ---- v9.0.1追加 / v9.0.2で出力方針を修正: filename fuzzy候補の列挙 ----
+# 旧v9.0.0までは「対象noteTypeのUUID一致ノートが0件のとき、ファイル名接頭辞だけが一致する
+# ノート(UUID未検証)を$targetAbsとして自動採用」していた。これは未確認ファイルへ
+# Update-Yaml-Robustで対象顧客UUIDを書き込む危険があるため廃止した。
+# 本関数の戻り値は内部変数へ保持するだけで、$targetAbsへ代入してはならない。
+# また、v9.0.2ではこの候補情報についてWrite-Host等の追加診断出力を一切行わない
+# (FileMakerとの応答契約 OK|... / NG|... へ新規出力を混在させないため)。
+# 必要な場合はNG応答のdetails文字列へ含めることだけを許容する。
+function Get-UciFuzzyNameCandidates([string]$folderPath, [string]$iconPrefix) {
+  $names = [System.Collections.ArrayList]::new()
+  if ([string]::IsNullOrWhiteSpace($folderPath) -or [string]::IsNullOrWhiteSpace($iconPrefix)) {
+    return ,$names.ToArray()
+  }
+  $files = Get-ChildItem -LiteralPath $folderPath -Filter "${iconPrefix}_*.md" -File -ErrorAction SilentlyContinue
+  foreach ($f in $files) { [void]$names.Add($f.Name) }
+  return ,$names.ToArray()
 }
 
 function Invoke-UpdateCustomerIdentity($payload) {
@@ -803,9 +1019,10 @@ function Invoke-UpdateCustomerIdentity($payload) {
   if (-not $folderNeedsRename -and -not $anyNoteNeedsUpdate -and -not $anyNoteNeedsRename -and -not $anyRepairPending) {
     # resolvedNotes(2026-07-30追加): NO_CHANGEでも現在の実在ファイルから生成して常時返す。
     # 同一noteType重複時は成功応答を返さずDUPLICATE_NOTE_TYPEで停止する(変更は未発生のため確定処理なし)。
+    # ★ v9.0.1: duplicate判定はdirect-childのみ(Get-UciResolvedNotes側で担保)。
     $resolvedInfoNc = Get-UciResolvedNotes $currentFolderInfo $pkClient $uciPrefixMap
     if ($null -ne $resolvedInfoNc.duplicateNoteType) {
-      Write-Output (New-UCIExtendedNgResponse $requestIdRaw "DUPLICATE_NOTE_TYPE" ("同一UUID・同一noteTypeのノートが複数存在します。(pk_CLIENT: " + $pkClient + " / noteType: " + $resolvedInfoNc.duplicateNoteType + " / 件数: " + $resolvedInfoNc.duplicateCount + ")") @{ duplicateNoteType = $resolvedInfoNc.duplicateNoteType; duplicateCount = $resolvedInfoNc.duplicateCount; pk_CLIENT = $pkClient })
+      Write-Output (New-UCIExtendedNgResponse $requestIdRaw "DUPLICATE_NOTE_TYPE" ("同一UUID・同一noteTypeのノートが顧客フォルダ直下に複数存在します。(pk_CLIENT: " + $pkClient + " / noteType: " + $resolvedInfoNc.duplicateNoteType + " / 件数: " + $resolvedInfoNc.duplicateCount + ")") @{ duplicateNoteType = $resolvedInfoNc.duplicateNoteType; duplicateCount = $resolvedInfoNc.duplicateCount; pk_CLIENT = $pkClient })
       return
     }
     Write-Output (New-UCIResponse $requestIdRaw "OK" "NO_CHANGE" "変更はありません。" 0 $false $currentFolderName $currentFolderName -resolvedNotesOut $resolvedInfoNc.entries)
@@ -997,6 +1214,7 @@ function Invoke-UpdateCustomerIdentity($payload) {
   # 書込み成功後、最終顧客フォルダを再取得し、実在ファイルからresolvedNotesを生成する。
   # 同一noteType重複を検出した場合は成功応答を返さず、既存ロールバック機構を再利用して
   # 変更を確定せずDUPLICATE_NOTE_TYPEで停止する。
+  # ★ v9.0.1: duplicate判定・resolvedNotesともdirect-childのみ(Get-UciResolvedNotes側で担保)。
   $uciResolvedEntries = $null
   $uciDuplicateNg = $null
   if ($null -eq $writeError) {
@@ -1004,7 +1222,7 @@ function Invoke-UpdateCustomerIdentity($payload) {
       $finalFolderInfoUci = Get-Item -LiteralPath $activeFolderPath
       $resolvedInfoOk = Get-UciResolvedNotes $finalFolderInfoUci $pkClient $uciPrefixMap
       if ($null -ne $resolvedInfoOk.duplicateNoteType) {
-        $uciDuplicateNg = New-UCIExtendedNgResponse $requestIdRaw "DUPLICATE_NOTE_TYPE" ("同一UUID・同一noteTypeのノートが複数存在するため、変更を確定せずロールバックしました。(pk_CLIENT: " + $pkClient + " / noteType: " + $resolvedInfoOk.duplicateNoteType + " / 件数: " + $resolvedInfoOk.duplicateCount + ")") @{ duplicateNoteType = $resolvedInfoOk.duplicateNoteType; duplicateCount = $resolvedInfoOk.duplicateCount; pk_CLIENT = $pkClient }
+        $uciDuplicateNg = New-UCIExtendedNgResponse $requestIdRaw "DUPLICATE_NOTE_TYPE" ("同一UUID・同一noteTypeのノートが顧客フォルダ直下に複数存在するため、変更を確定せずロールバックしました。(pk_CLIENT: " + $pkClient + " / noteType: " + $resolvedInfoOk.duplicateNoteType + " / 件数: " + $resolvedInfoOk.duplicateCount + ")") @{ duplicateNoteType = $resolvedInfoOk.duplicateNoteType; duplicateCount = $resolvedInfoOk.duplicateCount; pk_CLIENT = $pkClient }
         $writeError = "DUPLICATE_NOTE_TYPE"
       } else {
         $uciResolvedEntries = $resolvedInfoOk.entries
@@ -1127,17 +1345,34 @@ try {
 
   # アイコンとファイル名決定
   $prefixStr = Get-IconPrefix $noteType
-  $canonicalFile = "${prefixStr}_${nameNorm}.md"
 
+  # ---- v9.0.0: canonical命名の一元化 ----
+  # 顧客フォルダ名・新規ノート名はここで確定したcanonical値以外を使用しない。
+  $canonicalFolderName = Get-CanonicalCustomerFolderName $nameRaw $uuid
+  $canonicalFile = "${prefixStr}_${nameNorm}$(Get-UciUuidSuffix $uuid).md"
+
+  # ★ v9.0.2 (FIX-1): $targetAbs と 新規CREATE候補path を完全に分離する。
+  #   $targetAbs        ... UUID検証済みの既存managed noteだけを設定してよい変数。
+  #                         これが非nullのときのみUpdate-Yaml-Robustによる既存note更新を行う。
+  #   $newCandidateAbs  ... 新規CREATE候補path(まだ採用が確定していない予定パス)。
+  #                         実在していても既存managed noteとしては絶対に採用しない。
+  #   $fuzzyCandidates  ... UUID未検証のファイル名類似候補(診断保持のみ。出力は行わない)。
   $targetAbs = $null
+  $newCandidateAbs = $null
+  $fuzzyCandidates = @()
   $foundFolder = $null
-  $folders = Get-ChildItem -LiteralPath $custRoot -Directory -ErrorAction SilentlyContinue
 
-  # ---- 保存済み正式パスを最優先で解決 (2026-07-30) ----
-  # FileMakerのobs_RELPATHが実在し、01_顧客直下のノートであり、
-  # YAML UUIDとnoteTypeアイコン接頭辞が一致する場合は、
-  # 顧客名によるlegacyフォルダ検索より前にその既存ノートを採用する。
-  # これによりUUID付き正式ノートが存在する場合のUUIDなし重複作成を防止する。
+  # ========================================================
+  # v9.0.0 Step A: obs_RELPATH を「note locator hint」として検証・保持する。
+  # ここでは採用を確定しない(customer folder identity解決を必ず別途実行するため)。
+  # 検証内容は従来通り弱体化させない:
+  #   相対パス / ".."を含まない / 01_顧客配下 / Vault外へ出ない / 3セグメント /
+  #   実在ファイル / YAML完全UUID一致 / noteType接頭辞一致 / customer folderとして解決可能
+  # ========================================================
+  $hintNoteAbs = $null
+  $hintFolderInfo = $null
+  $hintFileName = $null
+
   if (
       $payload.ContainsKey("obs_RELPATH") -and
       -not [string]::IsNullOrWhiteSpace([string]$payload.obs_RELPATH)
@@ -1169,21 +1404,31 @@ try {
                       $storedFile.FullName
 
                   if ($null -ne $storedFolderInfo) {
-                      $storedHeader = @(Get-YamlHeaderLines $storedFile.FullName)
-                      $storedUuid = Get-YamlScalarValue $storedHeader "UUID:"
-                      $storedPrefixMatches = $storedFile.Name.StartsWith(
-                          "${prefixStr}_",
-                          [System.StringComparison]::Ordinal
+                      # customer folder直下のノートであること(managed note scope)を確認する。
+                      $storedIsDirectChild = [string]::Equals(
+                          (Split-Path -Parent $storedFile.FullName),
+                          $storedFolderInfo.FullName,
+                          [System.StringComparison]::OrdinalIgnoreCase
                       )
+                      $storedHeader = Get-YamlHeaderLines $storedFile.FullName
+                      if ($null -ne $storedHeader -and $storedIsDirectChild) {
+                          $storedUuid = Get-YamlScalarValue $storedHeader "UUID:"
+                          $storedPrefixMatches = $storedFile.Name.StartsWith(
+                              "${prefixStr}_",
+                              [System.StringComparison]::Ordinal
+                          )
 
-                      if (
-                          -not [string]::IsNullOrWhiteSpace($storedUuid) -and
-                          $storedUuid.Trim().ToUpperInvariant() -eq $uuid.Trim().ToUpperInvariant() -and
-                          $storedPrefixMatches
-                      ) {
-                          $targetAbs = $storedFile.FullName
-                          $canonicalFile = $storedFile.Name
-                          $foundFolder = $storedFolderInfo.Name
+                          if (
+                              -not [string]::IsNullOrWhiteSpace($storedUuid) -and
+                              (Test-UciUuidFormat $storedUuid) -and
+                              $storedUuid.Trim().ToUpperInvariant() -eq $uuid.Trim().ToUpperInvariant() -and
+                              $storedPrefixMatches
+                          ) {
+                              # note候補としてのみ保持する(folder identity authorityにはしない)。
+                              $hintNoteAbs = $storedFile.FullName
+                              $hintFolderInfo = $storedFolderInfo
+                              $hintFileName = $storedFile.Name
+                          }
                       }
                   }
               }
@@ -1191,77 +1436,188 @@ try {
       }
   }
 
-  # 1. 顧客フォルダ検索
-  $matchName = Normalize-ForMatch $nameRaw
-  $existing = $null
+  # ========================================================
+  # v9.0.0 Step B: 完全UUIDによる customer folder identity discovery
+  # 01_顧客配下を再帰検索し、YAML frontmatterの完全UUID一致ノートが属する
+  # 01_顧客直下のcustomer folderを特定する。
+  # ========================================================
+  $identityInfo = Get-UciUuidMatchedCustomerFolders $custRoot $uuid
+  if ($null -ne $identityInfo.unresolved) {
+      Out-NG "ERROR" "UUID一致ノートが01_顧客直下のフォルダ構造として解決できません。(Path: $($identityInfo.unresolved))"
+  }
+  $identityFolders = @($identityInfo.folders)
 
-  # 保存済み正式パスで対象が確定していない場合のみlegacy検索を行う。
-  if (-not $targetAbs) {
-      $existing = $folders |
-          Where-Object { (Normalize-ForMatch $_.Name) -eq $matchName } |
-          Select-Object -First 1
+  if ($identityFolders.Count -ge 2) {
+      $names = ($identityFolders | ForEach-Object { $_.Name }) -join ";"
+      Out-NG "UUID_FOLDER_CONFLICT" "同一UUIDのノートが複数の顧客フォルダにまたがっています。安全のため処理を中止します。(pk_CLIENT: $uuid / Folders: $names)"
   }
 
-  if ($existing) {
-      $foundFolder = $existing.Name
-      $currentFolderFull = $existing.FullName
+  $resolvedFolderInfo = $null
+  if ($identityFolders.Count -eq 1) {
+      $resolvedFolderInfo = $identityFolders[0]
+  }
 
-      # ---- 重複ノート作成防止(2026-07-29回帰修正): UUID + noteType優先解決 ----
-      # 社名変更後、canonicalFile(現在の社名から再生成した期待ファイル名)だけで既存ノートの
-      # 有無を判定すると、UPDATE_CUSTOMER_IDENTITYがファイル名は変更せずYAML内容のみ更新する
-      # 仕様のため、旧社名のファイル名を持つ既存ノートを見失い、新規ノートが重複作成される。
-      # そのため、まずUUID(pk_CLIENT) + 現在のnoteTypeのアイコン接頭辞(既存Get-IconPrefixを再利用)で
-      # 既存ノートを検索し、一致件数に応じて分岐する。既存のnoteType判定ロジックは変更しない。
-      $uciMatches = Get-UuidNoteTypeMatches $currentFolderFull $prefixStr $uuid
+  # ========================================================
+  # v9.0.0 Step C: identityで確定したフォルダのevidence評価 → canonical昇格
+  # ========================================================
+  if ($null -ne $resolvedFolderInfo) {
+      $evidence = Get-UciFolderEvidence $resolvedFolderInfo.FullName $uuid
+      switch ($evidence.state) {
+          "InvalidYaml" {
+              Out-NG "YAML_BODY_BOUNDARY_UNRESOLVED" "対象フォルダ内にYAML本文境界が判定できないノートがあります。本文喪失のおそれがあるため処理を中止しました。(Path: $($evidence.detailPath))"
+          }
+          "Conflict" {
+              Out-NG "FOLDER_UUID_MIXED" "対象フォルダ内に別UUIDのノートが混在しています。安全のため処理を中止します。(Path: $($evidence.detailPath) / UUID: $($evidence.detailValue))"
+          }
+          "InvalidUuid" {
+              Out-NG "FOLDER_UUID_INVALID" "対象フォルダ内にUUID形式が不正なノートが残存しています。安全のため処理を中止します。(Path: $($evidence.detailPath) / Value: $($evidence.detailValue))"
+          }
+          "NoEvidence" {
+              Out-NG "CANONICAL_FOLDER_NO_UUID_EVIDENCE" "対象フォルダの完全UUID証拠を再確認できませんでした。安全のため処理を中止します。(Folder: $($resolvedFolderInfo.Name) / pk_CLIENT: $uuid)"
+          }
+      }
+
+      # legacy(UUIDなし等) → canonicalへ昇格。別canonicalフォルダの新規作成は行わない。
+      if ($resolvedFolderInfo.Name -ne $canonicalFolderName) {
+          $canonicalDest = Join-Path $custRoot $canonicalFolderName
+          if (Test-Path -LiteralPath $canonicalDest) {
+              Out-NG "TARGET_FOLDER_ALREADY_EXISTS" "canonical顧客フォルダ名と同名の別フォルダが既に存在するため、昇格できません。(Current: $($resolvedFolderInfo.Name) / Canonical: $canonicalFolderName)"
+          }
+          try {
+              Rename-Item -LiteralPath $resolvedFolderInfo.FullName -NewName $canonicalFolderName -Force -ErrorAction Stop
+          } catch {
+              Out-NG "FOLDER_RENAME_FAILED" "顧客フォルダをcanonical名へ変更できませんでした: $($_.Exception.Message)"
+          }
+          $resolvedFolderInfo = Get-Item -LiteralPath (Join-Path $custRoot $canonicalFolderName)
+      }
+
+      $foundFolder = $resolvedFolderInfo.Name
+      $currentFolderFull = $resolvedFolderInfo.FullName
+
+      # ================================================================
+      # ★ v9.0.1 (MAJOR-1) / v9.0.2 (FIX-1): 正式managed noteの解決
+      #
+      # 正式既存noteとして$targetAbsに設定できるのは、次の3条件をすべて満たすファイルだけである。
+      #   (1) customer folder直下(direct-child)にあること
+      #   (2) 対象noteTypeのアイコン接頭辞と一致するファイル名であること
+      #   (3) YAML frontmatterの完全UUIDがpk_CLIENTと一致すること
+      # これらは Get-UuidNoteTypeMatches が一括で判定する(唯一のauthority)。
+      #
+      # v9.0.1では direct-child UUID一致0件のときに
+      #     $targetAbs = Join-Path $currentFolderFull $canonicalFile
+      # としていたため、canonicalFileと同名の既存ファイルが存在し、そのYAML UUIDが
+      # pk_CLIENTと一致しない(あるいはUUIDキー自体が無い)場合でも、後続の
+      #     if ($targetAbs -and (Test-Path -LiteralPath $targetAbs))
+      # へ流れて既存managed noteとして採用され、Update-Yaml-RobustでUUIDを
+      # 書き込んでしまう抜け道が残っていた。
+      #
+      # v9.0.2では direct-child UUID一致が0件の場合、$targetAbsは$nullのままとし、
+      # 新規CREATE候補pathは別変数$newCandidateAbsへ格納する。
+      # $newCandidateAbsが実在する場合でも既存managed noteとしては採用せず、
+      # 後段のCREATE直前チェックでTARGET_NOTE_FILENAME_CONFLICTとしてFail-closedする。
+      #
+      # サブフォルダ側に同一UUID+同一noteTypeのnoteがある場合は
+      # MANAGED_NOTE_OUT_OF_SCOPE で安全停止する。
+      # ================================================================
+      $outOfScopeNotes = @(Get-UciOutOfScopeManagedNotes $currentFolderFull $prefixStr $uuid)
+      $uciMatches = @(Get-UuidNoteTypeMatches $currentFolderFull $prefixStr $uuid)
 
       if ($uciMatches.Count -ge 2) {
-          Out-NG "NOTE_TYPE_UUID_CONFLICT" "同一UUID・同一noteTypeの既存ノートが複数見つかりました。安全のため処理を中止します。(Folder: $foundFolder / noteType: $noteType / 件数: $($uciMatches.Count))"
-      } elseif ($uciMatches.Count -eq 1) {
+          Out-NG "DUPLICATE_NOTE_TYPE" "同一UUID・同一noteTypeの既存ノートが顧客フォルダ直下に複数見つかりました。安全のため処理を中止します。(Folder: $foundFolder / noteType: $noteType / 件数: $($uciMatches.Count))"
+      }
+      if ($outOfScopeNotes.Count -ge 1) {
+          Out-NG "MANAGED_NOTE_OUT_OF_SCOPE" "管理対象ノートと同一UUID・同一noteTypeのノートが顧客フォルダのサブフォルダ内に存在します。自動採用・自動作成は行わず処理を中止します。(Folder: $foundFolder / noteType: $noteType / Path: $($outOfScopeNotes[0]))"
+      }
+
+      if ($uciMatches.Count -eq 1) {
+          # 正式managed note(direct-child + noteType一致 + 完全UUID一致)のみ採用する。
           $targetAbs = $uciMatches[0]
           $canonicalFile = Split-Path -Leaf $targetAbs
       } else {
-      if ($noteType -eq "契約一覧") {
-          $fuzzyFiles = Get-ChildItem -LiteralPath $currentFolderFull -Filter "✡️一覧_*.md" -File -ErrorAction SilentlyContinue
-          if ($fuzzyFiles) {
-              $targetAbs = $fuzzyFiles[0].FullName
-              $canonicalFile = $fuzzyFiles[0].Name
-          } else {
-              $targetAbs = Join-Path $currentFolderFull $canonicalFile
-          }
-      } else {
-          $checkPath = Join-Path $currentFolderFull $canonicalFile
-          $targetAbs = $checkPath
+          # ---- direct-child UUID一致 0件 ----
+          # ★ v9.0.2 (FIX-1): $targetAbsは$nullのまま維持する(既存note採用は行わない)。
+          # 新規CREATE候補pathのみを別変数へ保持する。
+          # ★ v9.0.2 (FIX-2): fuzzy候補は内部変数へ保持するだけで、Write-Host等の
+          #   追加診断出力は一切行わない(FileMaker応答契約へ新規出力を混在させない)。
+          $fuzzyCandidates = @(Get-UciFuzzyNameCandidates $currentFolderFull $prefixStr)
+          $newCandidateAbs = Join-Path $currentFolderFull $canonicalFile
+      }
 
-          if ($noteType -match "事故一覧" -and -not (Test-Path $targetAbs)) {
-              $fuzzyFiles = Get-ChildItem -LiteralPath $currentFolderFull -Filter "⛔一覧_*.md" -File -ErrorAction SilentlyContinue
-              if ($fuzzyFiles) {
-                  $targetAbs = $fuzzyFiles[0].FullName
-                  $canonicalFile = $fuzzyFiles[0].Name
+      # ---- v9.0.0: obs_RELPATH候補を最終フォルダ上で再検証して採用 ----
+      # hintのフォルダとidentity確定フォルダが矛盾する場合はFail-closed。
+      if ($null -ne $hintNoteAbs) {
+          $hintFinalAbs = Join-Path $currentFolderFull $hintFileName
+          $hintFolderConsistent = $false
+          if ($null -ne $hintFolderInfo) {
+              # 昇格Rename後は元パスが存在しないため、Rename前のフォルダ名/昇格後の名前いずれかと一致すればよい。
+              if ([string]::Equals($hintFolderInfo.FullName, $currentFolderFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+                  $hintFolderConsistent = $true
+              } elseif (-not (Test-Path -LiteralPath $hintFolderInfo.FullName)) {
+                  # 元フォルダが消えている = canonicalへRenameされた可能性。最終フォルダ上での実在で確認する。
+                  if (Test-Path -LiteralPath $hintFinalAbs -PathType Leaf) { $hintFolderConsistent = $true }
+              }
+          }
+          if (-not $hintFolderConsistent) {
+              Out-NG "RELPATH_FOLDER_MISMATCH" "obs_RELPATHが示す顧客フォルダと、完全UUIDで確定した顧客フォルダが一致しません。安全のため処理を中止します。(Hint: $($hintFolderInfo.Name) / Resolved: $foundFolder)"
+          }
+          if (Test-Path -LiteralPath $hintFinalAbs -PathType Leaf) {
+              $hintHdrFinal = Get-YamlHeaderLines $hintFinalAbs
+              if ($null -ne $hintHdrFinal) {
+                  $hintUuidFinal = Get-YamlScalarValue $hintHdrFinal "UUID:"
+                  if (
+                      -not [string]::IsNullOrWhiteSpace($hintUuidFinal) -and
+                      (Test-UciUuidFormat $hintUuidFinal) -and
+                      $hintUuidFinal.Trim().ToUpperInvariant() -eq $uuid.Trim().ToUpperInvariant() -and
+                      $hintFileName.StartsWith("${prefixStr}_", [System.StringComparison]::Ordinal)
+                  ) {
+                      # hintも「direct-child + noteType一致 + 完全UUID一致」を満たす場合のみ採用する。
+                      # (UUID検証済みであるため$targetAbsへの設定は正式ルールに適合する)
+                      $targetAbs = $hintFinalAbs
+                      $canonicalFile = $hintFileName
+                      $newCandidateAbs = $null
+                  }
               }
           }
       }
+
+      # folderNameConfirmedはgo-aheadに過ぎない。canonical folderを別名へ降格しない。
+      # 既にcanonical名へ昇格済みのため、ここでのRenameは行わない。
+  } else {
+      # identity未確定(完全UUID証拠なし)。
+      # obs_RELPATHでnoteが見つかっていた場合でも、identityが確定しないままの採用は行わない。
+      if ($null -ne $hintNoteAbs) {
+          Out-NG "RELPATH_FOLDER_MISMATCH" "obs_RELPATHのノートは見つかりましたが、完全UUIDによる顧客フォルダ確定ができませんでした。安全のため処理を中止します。(Hint: $hintNoteAbs / pk_CLIENT: $uuid)"
       }
 
-      if ($payload.ContainsKey("folderNameConfirmed")) {
-         $conf = Sanitize-LeafName ([string]$payload.folderNameConfirmed) $nameNorm
-         if ($existing.Name -ne $conf) {
-             try {
-                 Rename-Item -LiteralPath $existing.FullName -NewName $conf -Force -ErrorAction Stop
-                 $foundFolder = $conf
-                 $currentFolderFull = Join-Path $custRoot $conf
-                 $targetAbs = Join-Path $currentFolderFull $canonicalFile
-             } catch {
-                Write-Warning "フォルダリネーム失敗: $($_.Exception.Message)"
-                $foundFolder = $existing.Name
-             }
-         }
+      # legacy顧客名一致フォルダの状態を確認する(自動作成の前に必ず判定する)。
+      $folders = Get-ChildItem -LiteralPath $custRoot -Directory -ErrorAction SilentlyContinue
+      $matchName = Normalize-ForMatch $nameRaw
+      $legacyCandidates = @($folders | Where-Object {
+          $_.Name -ne $canonicalFolderName -and (Normalize-ForMatch $_.Name) -eq $matchName
+      })
+      if ($legacyCandidates.Count -ge 1) {
+          # 完全UUID証拠が無いlegacyフォルダ。別canonicalフォルダを勝手に作らずFail-closed。
+          $legacyNames = ($legacyCandidates | ForEach-Object { $_.Name }) -join ";"
+          Out-NG "LEGACY_FOLDER_NEEDS_MIGRATION" "顧客名が一致するフォルダが存在しますが、pk_CLIENTの完全UUID証拠がないため同一顧客と確定できません。手動確認が必要です。(Folders: $legacyNames / pk_CLIENT: $uuid)"
+      }
+
+      # canonical名フォルダが既に存在するのに完全UUID証拠が無い場合(UUID8衝突等)も自動採用しない。
+      $canonicalExisting = @($folders | Where-Object { $_.Name -eq $canonicalFolderName })
+      if ($canonicalExisting.Count -ge 1) {
+          Out-NG "CANONICAL_FOLDER_NO_UUID_EVIDENCE" "canonical名の顧客フォルダは存在しますが、pk_CLIENTの完全UUID証拠がありません。UUID先頭8文字の衝突の可能性があるため処理を中止します。(Folder: $canonicalFolderName / pk_CLIENT: $uuid)"
       }
   }
 
   # ▼▼▼ COMPARE モード (突合結果を開く) ▼▼▼
   if ($payload.MODE -eq "COMPARE") {
     if (-not $foundFolder) {
-       Out-NG "ERROR" "比較対象の顧客フォルダが見つかりません。(Search: $nameNorm / MatchKey: $matchName)"
+       Out-NG "ERROR" "比較対象の顧客フォルダが見つかりません。(Search: $nameNorm / pk_CLIENT: $uuid)"
+    }
+    # ★ v9.0.1/v9.0.2: COMPAREの突合対象も正式managed note(UUID検証済み)でなければならない。
+    # fuzzy候補・UUID未検証の同名ファイルは採用しないため、
+    # UUID検証済みの$targetAbsが無い場合はPythonへ渡さず安全停止する。
+    if ([string]::IsNullOrWhiteSpace($targetAbs) -or -not (Test-Path -LiteralPath $targetAbs -PathType Leaf)) {
+       Out-NG "MANAGED_NOTE_NOT_FOUND" "突合対象の正式ノート(UUID一致・顧客フォルダ直下)が見つかりません。(Folder: $foundFolder / noteType: $noteType / Expected: $canonicalFile)"
     }
 
     $compareDir = Join-Path $custRoot $foundFolder
@@ -1270,10 +1626,10 @@ try {
     if ($noteType -match "事故一覧") { $scriptName = "diff_checker_jiko.py" }
 
     $pyScript = Join-Path $PSScriptRoot $scriptName
-    if (-not (Test-Path $pyScript)) { throw "Pythonスクリプトが見つかりません: $pyScript" }
+    if (-not (Test-Path -LiteralPath $pyScript)) { throw "Pythonスクリプトが見つかりません: $pyScript" }
 
     $csvPath = $payload.csvPath
-    if (-not (Test-Path $csvPath)) { throw "CSVファイルが見つかりません: $csvPath" }
+    if (-not (Test-Path -LiteralPath $csvPath)) { throw "CSVファイルが見つかりません: $csvPath" }
 
     $logOut = Join-Path $env:TEMP "_py_out.log"
     $logErr = Join-Path $env:TEMP "_py_err.log"
@@ -1284,7 +1640,7 @@ try {
     Write-Host "Script : $scriptName"
     Write-Host "Target : $targetAbs"
 
-    Push-Location $compareDir
+    Push-Location -LiteralPath $compareDir
     try {
       & $python.FilePath @pythonArgs 1> $logOut 2> $logErr
       $pythonExitCode = $LASTEXITCODE
@@ -1322,6 +1678,10 @@ try {
   # ▼▼▼ 通常モード（引数に応じて一覧ファイルを開く／なければ作成） ▼▼▼
 
   # 1. 既存ノートあり（開いて終わる）
+  # ★ v9.0.2 (FIX-1): ここへ到達する$targetAbsは、必ず
+  #   「direct-child + noteType接頭辞一致 + 完全UUID一致」でUUID検証済みのファイルのみである。
+  #   UUID未検証のcanonicalFile同名ファイルやfuzzy候補は$targetAbsへ入らないため、
+  #   それらへUpdate-Yaml-Robustが実行されることはない。
   if ($targetAbs -and (Test-Path -LiteralPath $targetAbs)) {
     $totalVal = $null
     if ($noteType -eq "契約一覧") {
@@ -1346,66 +1706,135 @@ try {
     Out-OK "OPENED" $url $rel ($lw.ToString("yyyy-MM-ddTHH:mm:ss")) "e30="
   }
 
-  # ---- 最終防衛線(2026-07-30追加): 新規作成へ入る前の重複ノート再確認 ----
-  # FileMakerのobs_RELPATHやフォルダ名が古い場合でも、01_顧客配下全体から
-  # 同一UUID(frontmatterのみ)+同一noteType(既存アイコン接頭辞判定)の既存ノートを再確認する。
-  # 1件: 既存ノートを一切変更せず採用し既存OPEN応答フローへ接続 / 0件: UUID付き正式名で新規作成 /
-  # 2件以上: DUPLICATE_NOTE_TYPEで停止(新規作成・既存変更なし)。
-  if (Test-UciUuidFormat $uuid) {
-    $finalDefenseMatches = @(Get-UuidNoteTypeMatchesInTree $custRoot $prefixStr $uuid)
-    if ($finalDefenseMatches.Count -ge 2) {
-      Out-NG "DUPLICATE_NOTE_TYPE" "同一UUID・同一noteTypeの既存ノートが複数見つかりました。安全のため新規作成を中止します。(pk_CLIENT: $uuid / noteType: $noteType / 件数: $($finalDefenseMatches.Count))"
+  # ---- v9.0.0/v9.0.1/v9.0.2: 新規作成へ入る前の最終防衛線 ----
+  # customer folderが確定している場合は、その直下のみを主判定にして再確認する
+  # (再帰検索の結果で正式ノートを自動採用してはならない)。
+  # customer folderが未確定の場合は、01_顧客配下全体でscope外/他フォルダのノートを検出し、
+  # 誤った新規作成を防ぐ。
+  if ($null -ne $resolvedFolderInfo) {
+    $finalDirect = @(Get-UuidNoteTypeMatches $resolvedFolderInfo.FullName $prefixStr $uuid)
+    if ($finalDirect.Count -ge 2) {
+      Out-NG "DUPLICATE_NOTE_TYPE" "同一UUID・同一noteTypeの既存ノートが顧客フォルダ直下に複数見つかりました。安全のため新規作成を中止します。(pk_CLIENT: $uuid / noteType: $noteType / 件数: $($finalDirect.Count))"
     }
-    if ($finalDefenseMatches.Count -eq 1) {
+    $finalOutOfScope = @(Get-UciOutOfScopeManagedNotes $resolvedFolderInfo.FullName $prefixStr $uuid)
+    if ($finalOutOfScope.Count -ge 1) {
+      Out-NG "MANAGED_NOTE_OUT_OF_SCOPE" "管理対象ノートと同一UUID・同一noteTypeのノートがサブフォルダ内に存在します。新規作成を中止します。(pk_CLIENT: $uuid / noteType: $noteType / Path: $($finalOutOfScope[0]))"
+    }
+    if ($finalDirect.Count -eq 1) {
       # 既存採用専用分岐: 内容・YAML・ファイル名・LastWriteTimeを一切変更しない。
-      $adoptedAbs = [string]$finalDefenseMatches[0]
-      $adoptedFolderInfo = Resolve-UciDirectChildFolder (Get-Item -LiteralPath $custRoot) $adoptedAbs
-      $adoptedFolderName = if ($null -ne $adoptedFolderInfo) { $adoptedFolderInfo.Name } else { Split-Path -Leaf (Split-Path -Parent $adoptedAbs) }
+      # (ここへ到達するのはUUID検証済みのdirect-child noteのみ)
+      $adoptedAbs = [string]$finalDirect[0]
       $rel = Get-RelPath $VaultRoot $adoptedAbs
       $lw  = (Get-Item -LiteralPath $adoptedAbs).LastWriteTime
-      $index[$payload.pk_CLIENT] = @{ relpath=$rel; lastWrite=$lw.ToString("yyyy-MM-ddTHH:mm:ss"); noteType=[string]$payload.noteType; nameNorm=$nameNorm; folderName=$adoptedFolderName }
+      $index[$payload.pk_CLIENT] = @{ relpath=$rel; lastWrite=$lw.ToString("yyyy-MM-ddTHH:mm:ss"); noteType=[string]$payload.noteType; nameNorm=$nameNorm; folderName=$resolvedFolderInfo.Name }
       [System.IO.File]::WriteAllText($indexPath, ($index | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
       Open-ObsidianFile $VaultRoot $rel
       $url = Get-ObsidianOpenUrl $VaultRoot $rel
       Out-OK "OPENED" $url $rel ($lw.ToString("yyyy-MM-ddTHH:mm:ss")) "e30="
     }
-    # 0件: 旧UUIDなしcanonicalFileを使わず、UUID識別子付き正式名で新規作成する。
-    $canonicalFile = "${prefixStr}_${nameNorm}$(Get-UciUuidSuffix $uuid).md"
+  } else {
+    $treeMatches = @(Get-UuidNoteTypeMatchesInTree $custRoot $prefixStr $uuid)
+    if ($treeMatches.Count -ge 1) {
+      Out-NG "UUID_FOLDER_CONFLICT" "顧客フォルダを確定できないまま、同一UUID・同一noteTypeの既存ノートが検出されました。安全のため新規作成を中止します。(pk_CLIENT: $uuid / noteType: $noteType / Path: $($treeMatches[0]))"
+    }
   }
 
-  # 2. フォルダ未確定時の確認
-  $confName = if ($foundFolder) { $foundFolder } elseif ($payload.ContainsKey("folderNameConfirmed")) { [string]$payload.folderNameConfirmed } else { "" }
+  # 新規作成時のファイル名は必ずUUID識別子付きcanonical名にする。
+  $canonicalFile = "${prefixStr}_${nameNorm}$(Get-UciUuidSuffix $uuid).md"
 
-  if ([string]::IsNullOrWhiteSpace($confName)) {
-    $suggest = ($nameRaw -replace "株式会社","㈱") -replace "有限会社", "㈲"
-    $suggest = $suggest -replace "[\s　]+", ""
+  # 2. フォルダ未確定時の確認
+  # ※ suggestは必ずcanonicalFolderName。folderNameConfirmedは「新規作成継続のgo-ahead」としてのみ扱う。
+  #
+  # ★ v9.0.3 (folderNameConfirmed契約不整合の修正):
+  #   従来は「folderNameConfirmedが非空ならgo-ahead」としており、FileMaker側の
+  #   $$obsFolderNameInput(編集可能フィールド)でオペレータがcanonical名以外
+  #   (例: 部分一致で候補表示されたlegacyフォルダ名)を確定しても、その値を黙って捨てて
+  #   canonical名で新規作成していた。これは「オペレータの選択を無言で無視する」挙動であり安全でない。
+  #   本版では、folderNameConfirmedを引き続きnaming authorityにはしない(値からフォルダ名を作らない)が、
+  #   go-aheadとして受け入れる前に、既存Sanitize-LeafNameを通した値がcanonicalFolderNameと
+  #   OrdinalIgnoreCaseで一致することを必須化する。
+  #   不一致の場合はFOLDER_CONFIRMATION_MISMATCHでFail-closedし、
+  #   確認された名前のフォルダを既存採用しない・そこへ移動しない・canonicalフォルダも作らない・
+  #   ノートも作らない(何も作成・変更せずに停止する)。
+  $folderNameConfirmedRaw = ""
+  $hasGoAhead = $false
+  if (
+      $payload.ContainsKey("folderNameConfirmed") -and
+      -not [string]::IsNullOrWhiteSpace([string]$payload.folderNameConfirmed)
+  ) {
+    $folderNameConfirmedRaw = [string]$payload.folderNameConfirmed
+    # 既存のSanitize-LeafNameのみを使用する(新しいSanitize関数は追加しない)。
+    # 前後空白・全角空白・制御文字・禁止文字等は既存規則で正規化されるため、
+    # T27のような入力揺れはcanonicalと一致すれば正常継続できる。
+    $confirmedSafeName = Sanitize-LeafName $folderNameConfirmedRaw "NO_NAME"
+    if (-not [string]::Equals(
+            $confirmedSafeName,
+            $canonicalFolderName,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+      Out-NG "FOLDER_CONFIRMATION_MISMATCH" "FileMakerで確認されたフォルダ名がcanonicalFolderNameと一致しないため、新規作成を中止しました。(Confirmed: $confirmedSafeName / Canonical: $canonicalFolderName)"
+    }
+    $hasGoAhead = $true
+  }
+
+  if ((-not $foundFolder) -and (-not $hasGoAhead)) {
+    $folders = Get-ChildItem -LiteralPath $custRoot -Directory -ErrorAction SilentlyContinue
+    $suggest = $canonicalFolderName
     $cands = $folders | Where-Object { (Normalize-ForMatch $_.Name) -like "*$nameNorm*" } | Select-Object -ExpandProperty Name
     Out-OKNeedFolder $cands $suggest $nameNorm $canonicalFile
   }
 
   # 3. 新規作成（フォルダ作成含む）
-  $safeConfName = Sanitize-LeafName $confName $nameNorm
-  $existingFinal = $folders | Where-Object { (Normalize-ForMatch $_.Name) -eq (Normalize-ForMatch $safeConfName) } | Select-Object -First 1
-
-  if ($existingFinal) {
-      if ($existingFinal.Name -ne $safeConfName) {
-          try {
-             Rename-Item -LiteralPath $existingFinal.FullName -NewName $safeConfName -Force -ErrorAction Stop
-             $newDir = Join-Path $custRoot $safeConfName
-          } catch {
-             $newDir = $existingFinal.FullName
-             $safeConfName = $existingFinal.Name
-          }
-      } else {
-          $newDir = $existingFinal.FullName
-      }
+  # 作成先フォルダ名はcanonicalFolderName以外を認めない。
+  if ($foundFolder) {
+    $newDir = Join-Path $custRoot $foundFolder
+    $actualCreateFolderName = $foundFolder
   } else {
-      $newDir = Join-Path $custRoot $safeConfName
-      if (-not (Test-Path -LiteralPath $newDir)) { New-Item -ItemType Directory -Path $newDir -Force | Out-Null }
+    $actualCreateFolderName = $canonicalFolderName
+    $newDir = Join-Path $custRoot $canonicalFolderName
   }
 
+  # fail-closed再確認: 作成先フォルダ名がcanonical名(または既にUUID証拠で確定したcanonical昇格済み名)であること。
+  if ($actualCreateFolderName -ne $canonicalFolderName) {
+    Out-NG "CANONICAL_FOLDER_NAME_MISMATCH" "作成先フォルダ名がcanonical名と一致しません。安全のため処理を中止します。(Actual: $actualCreateFolderName / Canonical: $canonicalFolderName)"
+  }
+
+  if (-not (Test-Path -LiteralPath $newDir)) {
+    [void][System.IO.Directory]::CreateDirectory($newDir)
+  }
+  $newDirInfo = Get-Item -LiteralPath $newDir
+  $newDir = $newDirInfo.FullName
+  $safeConfName = $newDirInfo.Name
+
+  # ★ v9.0.2 (FIX-1): 新規CREATE候補pathを最終確定する。
+  # 既に$newCandidateAbs(identity確定フォルダ上での候補path)がある場合はそれを優先し、
+  # 無い場合(identity未確定→新規フォルダ作成経路)はここで組み立てる。
+  # いずれの場合も、このpathに実在ファイルがあるときは既存managed noteとして採用せず、
+  # TARGET_NOTE_FILENAME_CONFLICTでFail-closedする(既存ファイルへのUUID書込みによる
+  # 「正規化」は絶対に行わない)。
   $newAbs = Join-Path $newDir $canonicalFile
-  New-Item -Path $newAbs -ItemType File -Force | Out-Null
+  if ($null -ne $newCandidateAbs) {
+    if (-not [string]::Equals($newCandidateAbs, $newAbs, [System.StringComparison]::OrdinalIgnoreCase)) {
+      # identity確定フォルダとCREATE先フォルダが食い違う異常系。安全のため停止する。
+      Out-NG "CANONICAL_FOLDER_NAME_MISMATCH" "新規作成候補パスが顧客フォルダ確定結果と一致しません。安全のため処理を中止します。(Candidate: $newCandidateAbs / Create: $newAbs)"
+    }
+  }
+  if (Test-Path -LiteralPath $newAbs) {
+    $fuzzyDetail = ""
+    if ($fuzzyCandidates.Count -ge 1) { $fuzzyDetail = " / UUID未検証の同種ファイル名候補: " + (($fuzzyCandidates | Select-Object -First 5) -join ";") }
+    Out-NG "TARGET_NOTE_FILENAME_CONFLICT" "作成予定のノートと同名のファイルが既に存在しますが、YAMLの完全UUIDがpk_CLIENTと一致しないため既存ノートとして採用できません。上書き・自動正規化は行わず処理を中止します。(Path: $newAbs / pk_CLIENT: $uuid / noteType: $noteType$fuzzyDetail)"
+  }
+  try {
+    $fsNew = [System.IO.File]::Open(
+        $newAbs,
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None
+    )
+    $fsNew.Close()
+    $fsNew.Dispose()
+  } catch {
+    Out-NG "NOTE_CREATE_FAILED" "ノートの新規作成に失敗しました(既存ファイルとの競合の可能性): $($_.Exception.Message)"
+  }
 
   $totalVal = $null
   if ($noteType -eq "契約一覧") { $totalVal = "" }
