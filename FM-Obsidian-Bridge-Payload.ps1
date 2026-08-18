@@ -1,6 +1,6 @@
-﻿<# =====================================================
+<# =====================================================
 FM-Obsidian-Bridge-Payload.ps1
-Ver: 9.0.3 (2026-08-13) - Folder Confirmation Contract Fix
+Ver: 9.0.4 (2026-08-18) - PowerShell Array Return Contract Fix
 
 【概要】
 FileMaker（顧客管理システム）から送信されたJSONペイロードを受け取り、
@@ -92,6 +92,17 @@ Obsidian標準の obsidian://open?vault=<name>&file=<relpath> URIスキームで
   canonicalフォルダも作成しない/ノートも作成しない(完全Fail-closed)。
 - 新規helper関数は追加していない(既存Sanitize-LeafName / Out-NGのみを使用)。
 - 正常系(NEED_FOLDER_CONFIRMのsuggestであるcanonical名をそのまま確認して再送する流れ)は不変。
+
+【★ v9.0.4 修正内容 (PowerShell配列返却契約修正 / MANAGED_NOTE_OUT_OF_SCOPE誤発火解消) 】
+- array-return helper関数 (Get-UuidNoteTypeMatches, Get-UuidNoteTypeMatchesInTree,
+  Get-UciOutOfScopeManagedNotes, Get-UciFuzzyNameCandidates) において、
+  過剰な単項カンマ演算子(,)による空配列の1オブジェクト化を廃止し、通常の配列返却へ統一。
+- 呼び出し側の @(...) 配列サブ式との組み合わせによる nested empty array (Count=1 / Item[0]=@())
+  誤判定を解消し、検索結果0件時に確実に Count=0 となるよう配列返却契約を正常化。
+- 本修正により、サブフォルダに同UUID・同noteTypeのノートが存在しない正常ケースにおいて
+  MANAGED_NOTE_OUT_OF_SCOPE (空Path) が誤発火する回帰バグを解消。
+- サブフォルダ側に同UUID+同noteTypeが実際に存在する genuine な out-of-scope ケースにおける
+  MANAGED_NOTE_OUT_OF_SCOPE の Fail-closed 安全防御はそのまま維持。
 
 【前提条件】
 - 対象Vaultが Obsidian に既知のVaultとして登録済みであること。
@@ -443,10 +454,9 @@ function Get-UuidNoteTypeMatches([string]$folderPath, [string]$iconPrefix, [stri
   # 本文中の文字列一致など、frontmatter外のUUID一致は判定対象にしない。
   # UUIDが空の場合は判定不能として空配列を返す(呼び出し側は0件と同様に扱われ、既存挙動を維持する)。
   # 戻り値: 一致したファイルの絶対パスの配列(0件・1件・複数件のいずれもあり得る)。
-  # 単一要素・空配列のPowerShell自動アンロールを避けるため、既存Get-YamlHeaderLinesと同様に
-  # 単項カンマ演算子(,)で配列を1段階分ラップしてから返す。
+  # ★ v9.0.4: 単項カンマ(,)による過剰ラップを廃止し、呼び出し側 @(...) で正しく 0/1/複数件を受け取れるよう修正。
   $matched = [System.Collections.ArrayList]::new()
-  if ([string]::IsNullOrWhiteSpace($uuid)) { return ,$matched.ToArray() }
+  if ([string]::IsNullOrWhiteSpace($uuid)) { return $matched.ToArray() }
   $candidates = Get-ChildItem -LiteralPath $folderPath -Filter "${iconPrefix}_*.md" -File -ErrorAction SilentlyContinue
   foreach ($f in $candidates) {
     $hdr = Get-YamlHeaderLines $f.FullName
@@ -456,7 +466,7 @@ function Get-UuidNoteTypeMatches([string]$folderPath, [string]$iconPrefix, [stri
       [void]$matched.Add($f.FullName)
     }
   }
-  return ,$matched.ToArray()
+  return $matched.ToArray()
 }
 
 # ---- UUID識別子付き正式命名規則への常時正規化(2026-07-29追加) ----
@@ -648,7 +658,7 @@ function Get-UciResolvedNotes([System.IO.DirectoryInfo]$folderInfo, [string]$pkC
 #   本関数はscope外ノート(サブフォルダ)の検出・診断のためだけに使用する。
 function Get-UuidNoteTypeMatchesInTree([string]$rootPath, [string]$iconPrefix, [string]$uuid) {
   $matched = [System.Collections.ArrayList]::new()
-  if ([string]::IsNullOrWhiteSpace($uuid)) { return ,$matched.ToArray() }
+  if ([string]::IsNullOrWhiteSpace($uuid)) { return $matched.ToArray() }
   $candidates = Get-ChildItem -LiteralPath $rootPath -Filter "${iconPrefix}_*.md" -File -Recurse -ErrorAction SilentlyContinue
   foreach ($f in $candidates) {
     $hdr = Get-YamlHeaderLines $f.FullName
@@ -658,7 +668,7 @@ function Get-UuidNoteTypeMatchesInTree([string]$rootPath, [string]$iconPrefix, [
       [void]$matched.Add($f.FullName)
     }
   }
-  return ,$matched.ToArray()
+  return $matched.ToArray()
 }
 
 function Test-UciUuidFormat([string]$s) {
@@ -768,15 +778,16 @@ function Get-UciUuidMatchedCustomerFolders([string]$custRootPath, [string]$pkCli
 # direct-child duplicate件数へは絶対に混ぜない。
 function Get-UciOutOfScopeManagedNotes([string]$folderPath, [string]$iconPrefix, [string]$uuid) {
   $outOfScope = [System.Collections.ArrayList]::new()
-  if ([string]::IsNullOrWhiteSpace($uuid)) { return ,$outOfScope.ToArray() }
+  if ([string]::IsNullOrWhiteSpace($uuid) -or [string]::IsNullOrWhiteSpace($folderPath)) { return $outOfScope.ToArray() }
+  $normFolder = if (Test-Path -LiteralPath $folderPath) { (Get-Item -LiteralPath $folderPath).FullName } else { [System.IO.Path]::GetFullPath($folderPath) }
   $all = @(Get-UuidNoteTypeMatchesInTree $folderPath $iconPrefix $uuid)
   foreach ($p in $all) {
     $parent = Split-Path -Parent $p
-    if (-not [string]::Equals($parent, $folderPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+    if (-not [string]::Equals($parent, $normFolder, [System.StringComparison]::OrdinalIgnoreCase)) {
       [void]$outOfScope.Add($p)
     }
   }
-  return ,$outOfScope.ToArray()
+  return $outOfScope.ToArray()
 }
 
 # ---- v9.0.1追加 / v9.0.2で出力方針を修正: filename fuzzy候補の列挙 ----
@@ -790,11 +801,11 @@ function Get-UciOutOfScopeManagedNotes([string]$folderPath, [string]$iconPrefix,
 function Get-UciFuzzyNameCandidates([string]$folderPath, [string]$iconPrefix) {
   $names = [System.Collections.ArrayList]::new()
   if ([string]::IsNullOrWhiteSpace($folderPath) -or [string]::IsNullOrWhiteSpace($iconPrefix)) {
-    return ,$names.ToArray()
+    return $names.ToArray()
   }
   $files = Get-ChildItem -LiteralPath $folderPath -Filter "${iconPrefix}_*.md" -File -ErrorAction SilentlyContinue
   foreach ($f in $files) { [void]$names.Add($f.Name) }
-  return ,$names.ToArray()
+  return $names.ToArray()
 }
 
 function Invoke-UpdateCustomerIdentity($payload) {
