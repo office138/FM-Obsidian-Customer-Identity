@@ -1,6 +1,6 @@
 ﻿<# =====================================================
 FM-Obsidian-Bridge-Payload.ps1
-Ver: 9.0.4 (2026-08-18) - PowerShell Array Return Contract Fix
+Ver: 9.1.0 (2026-08-29) - Customer Folder Merge v1 Implementation
 
 【概要】
 FileMaker（顧客管理システム）から送信されたJSONペイロードを受け取り、
@@ -279,8 +279,8 @@ function Extract-TableTotal([string]$filePath) {
                 $vals = $cols | ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
                 if ($vals.Count -ge 2) {
                     $potentialVal = $vals[-1]
-                    $check = $potentialVal -replace "[*]", "" -replace ",", "" -replace "[\s　]", ""
-                    if ($check -match "^\d+$") { return ($potentialVal -replace "[*]", "") }
+                    $valDigits = $potentialVal -replace "[*]", "" -replace ",", "" -replace "[\s　]", ""
+                    if ($valDigits -match "^\d+$") { return ($potentialVal -replace "[*]", "") }
                 }
             }
         }
@@ -863,11 +863,31 @@ function Invoke-UpdateCustomerIdentity($payload) {
   $ruby = [string]$payload.RUBY
   $rank = [string]$payload.RANK
 
-  $newFolderNameCheck = Sanitize-LeafName $companyNameRaw "NO_NAME"
-  if ($newFolderNameCheck -eq "NO_NAME") {
+  $newFolderNameSanity = Sanitize-LeafName $companyNameRaw "NO_NAME"
+  if ($newFolderNameSanity -eq "NO_NAME") {
     Write-Output (New-UCIResponse $requestIdRaw "NG" "INVALID_CUSTOMER_NAME" "companyNameRawから安全なフォルダ名を生成できません。")
     return
   }
+
+  # Lock Acquisition Phase (NH-1, NM-1, NM-2)
+  $txDir = Join-Path $vaultRootUci ".fm-obsidian-bridge-transactions"
+  if (-not (Test-Path -LiteralPath $txDir)) { [void][System.IO.Directory]::CreateDirectory($txDir) }
+
+  $lock = $null
+  try {
+    $lock = [System.IO.FileStream]::new(
+      (Join-Path $txDir "ACTIVE.lock"),
+      [System.IO.FileMode]::OpenOrCreate,
+      [System.IO.FileAccess]::ReadWrite,
+      [System.IO.FileShare]::None
+    )
+  } catch {
+    $errClass = Get-LockAcquisitionErrorClass $_.Exception
+    Write-Output (New-UCIResponse $requestIdRaw "NG" "EXECUTION_FAILED" "ロックの取得に失敗しました ($errClass): $($_.Exception.Message)")
+    return
+  }
+
+  try {
 
   $custRootUci = Join-Path $vaultRootUci "01_顧客"
   if (-not (Test-Path -LiteralPath $custRootUci)) {
@@ -1284,44 +1304,1677 @@ function Invoke-UpdateCustomerIdentity($payload) {
   $finalFolderName = if ($folderNeedsRename) { $newFolderName } else { $currentFolderName }
   $renamedNotesOut = @($notePairs | Where-Object { $_.renamed } | ForEach-Object { [ordered]@{ oldName = $_.curFileName; newName = $_.targetFileName } })
   Write-Output (New-UCIResponse $requestIdRaw "OK" "CUSTOMER_IDENTITY_UPDATED" "顧客情報を更新しました。" $updatedCount $folderNeedsRename $currentFolderName $finalFolderName $renamedNotesOut.Count $uuidSuffix $renamedNotesOut -resolvedNotesOut $uciResolvedEntries)
+  } finally {
+    if ($null -ne $lock) {
+      $lock.Close()
+      $lock.Dispose()
+    }
+  }
 }
 
-try {
-  if ([string]::IsNullOrWhiteSpace($PayloadB64)) {
-    if (-not (Test-Path -LiteralPath $PayloadFile)) { Out-NG "ERROR" "Payload not found." }
-    $PayloadB64 = (Get-Content -LiteralPath $PayloadFile -Raw -Encoding UTF8).Trim()
-    try { Remove-Item -LiteralPath $PayloadFile -Force -ErrorAction SilentlyContinue } catch {}
-  }
 
-  $payload = ConvertTo-Hashtable (ConvertFrom-Json (From-Base64Any $PayloadB64))
+# ==============================================================================
+# Customer Folder Merge v1 Implementation Functions
+# ==============================================================================
+# Customer Folder Merge v1 Implementation Functions
+# ==============================================================================
 
-  # UPDATE_CUSTOMER_IDENTITY: 既存Assert-ObsidianReady・MODE判定より前で分岐。
-  # JSON応答をstdoutへ出力した後、既存処理へは流れず終了する(既存Out-OK/Out-NGは使用しない)。
-  # 回帰修正(2026-07-29): 従来payload(EXT-obs_OBSノート-開く由来)にはactionキーが存在しないため、
-  # StrictMode下で$payload.actionを直接参照すると「プロパティ'action'が見つかりません」で例外になる。
-  # $payloadはConvertTo-Hashtableにより必ず[hashtable]化されるため、ContainsKey('action')で
-  # 存在確認してから読み取る(PSObject.PropertiesはHashtableの動的キーを列挙しないため使用しない)。
-  $uciActionValue = $null
-  if (($null -ne $payload) -and ($payload -is [hashtable]) -and $payload.ContainsKey('action')) {
-    $uciActionValue = [string]$payload.action
+
+function New-MergeResponse {
+  param(
+    [string]$RequestId = $null,
+    [string]$Status = "OK",
+    [string]$Code = "",
+    [string]$UserMessage = "",
+    [string]$Warning = $null,
+    [hashtable]$Extra = @{}
+  )
+  $resp = [ordered]@{
+    status        = $Status
+    code          = $Code
+    userMessage   = $UserMessage
+    requestId     = $RequestId
+    updatedFiles  = 0
+    folderRenamed = $false
   }
-  if ($uciActionValue -eq "UPDATE_CUSTOMER_IDENTITY") {
-    try {
-      Invoke-UpdateCustomerIdentity $payload
-    } catch {
-      $reqIdSafe = $null
-      try {
-        if ($payload.requestId -is [string] -and -not [string]::IsNullOrWhiteSpace($payload.requestId)) {
-          $reqIdSafe = $payload.requestId
-        }
-      } catch {}
-      Write-Output (New-UCIResponse $reqIdSafe "NG" "EXECUTION_FAILED" "処理中に予期しないエラーが発生しました。")
+  if (-not [string]::IsNullOrEmpty($Warning)) {
+    $resp["warning"] = $Warning
+  }
+  if ($null -ne $Extra) {
+    foreach ($k in $Extra.Keys) {
+      $resp[$k] = $Extra[$k]
     }
-    exit 0
+  }
+  return ($resp | ConvertTo-Json -Depth 10)
+}
+
+# ---- Win32 Native Helpers ----
+if (-not ([System.Management.Automation.PSTypeName]'Win32NativeMergeHelper').Type) {
+  Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class Win32NativeMergeHelper {
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "GetLongPathNameW")]
+    public static extern uint GetLongPathName(
+        string lpszShortPath,
+        StringBuilder lpszLongPath,
+        uint cchBuffer
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateDirectoryW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CreateDirectory(
+        string lpPathName,
+        IntPtr lpSecurityAttributes
+    );
+}
+"@
+}
+
+if (-not ([System.Management.Automation.PSTypeName]'Win32DurableJournalHelper').Type) {
+  Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+public static class Win32DurableJournalHelper {
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "MoveFileExW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool MoveFileEx(
+        string lpExistingFileName,
+        string lpNewFileName,
+        uint dwFlags
+    );
+
+    public const uint MOVEFILE_REPLACE_EXISTING = 0x1;
+    public const uint MOVEFILE_WRITE_THROUGH    = 0x8;
+}
+"@
+}
+
+if (-not (Test-Path variable:global:__TEST_CRASH_HOOK)) {
+  $global:__TEST_CRASH_HOOK = $null
+}
+
+function Invoke-TestCrashHook([string]$Window) {
+  $hookVal = (Get-Variable -Name __TEST_CRASH_HOOK -Scope Global -ValueOnly -ErrorAction SilentlyContinue)
+  if ([string]::IsNullOrWhiteSpace($hookVal)) { return }
+
+  if ($hookVal -ceq $Window) {
+    # HARD child termination: TerminateProcess. No unwinding, no catch/finally/trap.
+    $p = [System.Diagnostics.Process]::GetCurrentProcess()
+    $p.Kill()
+    $p.WaitForExit()   # never returns; guarantees nothing past this seam runs
+    return
   }
 
-  $VaultRoot = ([string]$payload.VaultRoot).Trim()
+  if ($hookVal -ceq ($Window + ":THROW")) {
+    throw [System.ApplicationException]::new("SIMULATED_FAULT_AT_${Window}")
+  }
+}
+
+function Resolve-Win32CanonicalPath {
+  param([string]$Path)
+  if ([string]::IsNullOrWhiteSpace($Path)) { return $null }
+
+  if (-not [System.IO.Path]::IsPathRooted($Path)) {
+    return $null
+  }
+
+  if ($Path.StartsWith("\\") -or $Path.StartsWith("//")) {
+    return $null
+  }
+
+  $full = [System.IO.Path]::GetFullPath($Path)
+  if ($full.StartsWith("\\") -or $full.StartsWith("//")) {
+    return $null
+  }
+
+  $root = [System.IO.Path]::GetPathRoot($full)
+  if ([string]::IsNullOrWhiteSpace($root) -or -not ($root -match '^[A-Za-z]:[\\/]')) {
+    return $null
+  }
+
+  if (Test-Path -LiteralPath $full) {
+    $bufferSize = [uint32]1024
+    $sb = [System.Text.StringBuilder]::new([int]$bufferSize)
+    $res = [Win32NativeMergeHelper]::GetLongPathName($full, $sb, $bufferSize)
+    if ($res -ge $bufferSize) {
+      $bufferSize = $res
+      $sb = [System.Text.StringBuilder]::new([int]$bufferSize)
+      $res = [Win32NativeMergeHelper]::GetLongPathName($full, $sb, $bufferSize)
+    }
+    if ($res -eq 0) {
+      return $null
+    }
+    return $sb.ToString()
+  }
+
+  return $null
+}
+
+function New-Win32ExclusiveDirectory {
+  param([string]$Path)
+  $success = [Win32NativeMergeHelper]::CreateDirectory($Path, [IntPtr]::Zero)
+  if (-not $success) {
+    $lastErr = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    return @{ Success = $false; ErrorCode = $lastErr }
+  }
+  return @{ Success = $true; ErrorCode = 0 }
+}
+
+function Get-FileSha256Raw {
+  param([string]$FilePath)
+  if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) { return $null }
+  $bytes = [System.IO.File]::ReadAllBytes($FilePath)
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $hashBytes = $sha.ComputeHash($bytes)
+  return [BitConverter]::ToString($hashBytes).Replace("-", "").ToUpperInvariant()
+}
+
+function New-MergePlanTokenV3 {
+  param(
+    [string]$VaultRoot,
+    [string]$Uuid,
+    [string]$CanonicalFolderName,
+    [array]$SourceFolders,
+    [array]$ManagedFiles
+  )
+  $ms = New-Object System.IO.MemoryStream
+  $bw = New-Object System.IO.BinaryWriter($ms, [System.Text.Encoding]::UTF8)
+
+  $bw.Write([System.Text.Encoding]::UTF8.GetBytes("FMOBSMERGE"))
+  $bw.Write([byte]3)
+  $bw.Write($VaultRoot)
+  $bw.Write($Uuid.ToUpperInvariant())
+  $bw.Write($CanonicalFolderName)
+
+  $sortedFolders = @($SourceFolders | Sort-Object)
+  $bw.Write([int32]$sortedFolders.Count)
+  foreach ($sf in $sortedFolders) {
+    $bw.Write($sf)
+  }
+
+  $sortedFiles = @($ManagedFiles | Sort-Object { $_.RelativePath })
+  $bw.Write([int32]$sortedFiles.Count)
+  foreach ($mf in $sortedFiles) {
+    $bw.Write($mf.RelativePath)
+    $bw.Write($mf.NoteType)
+    $bw.Write([int64]$mf.SizeBytes)
+    $bw.Write($mf.Sha256)
+  }
+
+  $bw.Flush()
+  $payloadBytes = $ms.ToArray()
+  $bw.Close()
+  $ms.Close()
+
+  $sha = [System.Security.Cryptography.SHA256]::Create()
+  $hash = $sha.ComputeHash($payloadBytes)
+  $tokenHex = [BitConverter]::ToString($hash).Replace("-", "").ToUpperInvariant()
+
+  return "PLAN-V3-$tokenHex"
+}
+
+function Get-CustomerMergeTopology {
+  param(
+    [string]$VaultRoot,
+    [string]$Uuid,
+    [string]$CompanyNameRaw
+  )
+  $custRoot = Join-Path $VaultRoot "01_顧客"
+  if (-not (Test-Path -LiteralPath $custRoot)) {
+    return @{ Error = "CUSTOMER_NOT_FOUND"; Details = "顧客ルートフォルダ '01_顧客' が存在しません。" }
+  }
+
+  $dirInfos = Get-ChildItem -LiteralPath $custRoot -Directory -Force -ErrorAction SilentlyContinue
+  $matchedFolders = @()
+  $prefixMap = Get-UciKnownPrefixMap
+
+  foreach ($dir in $dirInfos) {
+    if (($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+      return @{ Error = "MERGE_REPARSE_POINT_UNSUPPORTED"; Details = "顧客フォルダ内に再解析ポイント(ジャンクション/シンボリックリンク)が検出されました: $($dir.FullName)" }
+    }
+
+    $files = Get-ChildItem -LiteralPath $dir.FullName -File -Force -ErrorAction SilentlyContinue
+    $hasTargetUuid = $false
+    $folderUuids = New-Object System.Collections.Generic.HashSet[string]
+    $folderNoteTypes = New-Object System.Collections.Generic.HashSet[string]
+    $folderManagedNotes = @()
+    $folderUnmanagedFiles = @()
+
+    foreach ($file in $files) {
+      if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        return @{ Error = "MERGE_REPARSE_POINT_UNSUPPORTED"; Details = "ファイル '$($file.FullName)' に再解析ポイントが検出されました。" }
+      }
+
+      if ($file.Name.EndsWith(".md", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $headerLines = Get-YamlHeaderLines $file.FullName
+        if ($null -ne $headerLines) {
+          $fileUuid = Get-YamlScalarValue $headerLines "UUID:"
+          if (-not [string]::IsNullOrWhiteSpace($fileUuid)) {
+            if (-not (Test-UciUuidFormat $fileUuid)) {
+              return @{ Error = "FOLDER_UUID_INVALID"; Details = "ファイル '$($file.FullName)' のYAML UUID形式が不正です: $fileUuid" }
+            }
+            [void]$folderUuids.Add($fileUuid.Trim().ToUpperInvariant())
+
+            if ($fileUuid.Trim().ToUpperInvariant() -eq $Uuid.Trim().ToUpperInvariant()) {
+              $hasTargetUuid = $true
+
+              $matchedPrefix = $null
+              foreach ($k in $prefixMap.Keys) {
+                if ($file.Name.StartsWith("${k}_", [System.StringComparison]::Ordinal)) {
+                  $matchedPrefix = $k
+                  break
+                }
+              }
+
+              if ($null -ne $matchedPrefix) {
+                $nType = $prefixMap[$matchedPrefix]
+                if ($folderNoteTypes.Contains($nType)) {
+                  return @{ Error = "DUPLICATE_NOTE_TYPE"; Details = "フォルダ '$($dir.Name)' 内に同一noteType('$nType')のノートが複数存在します: $($file.Name)" }
+                }
+                [void]$folderNoteTypes.Add($nType)
+                $sha = Get-FileSha256Raw $file.FullName
+                $folderManagedNotes += @{
+                  FileName = $file.Name
+                  FullPath = $file.FullName
+                  RelativePath = Get-RelPath $VaultRoot $file.FullName
+                  NoteType = $nType
+                  SizeBytes = $file.Length
+                  Sha256 = $sha
+                }
+              } else {
+                return @{ Error = "MERGE_UNMANAGED_UUID_EVIDENCE"; Details = "管理プレフィックス外のMarkdownファイル '$($file.Name)' に対象UUIDが記載されています。" }
+              }
+            }
+          }
+        }
+      } else {
+        $folderUnmanagedFiles += @{
+          FileName = $file.Name
+          FullPath = $file.FullName
+          RelativePath = Get-RelPath $VaultRoot $file.FullName
+          SizeBytes = $file.Length
+        }
+      }
+    }
+
+    $subDirs = Get-ChildItem -LiteralPath $dir.FullName -Directory -Recurse -Force -ErrorAction SilentlyContinue
+    foreach ($sd in $subDirs) {
+      if (($sd.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        return @{ Error = "MERGE_REPARSE_POINT_UNSUPPORTED"; Details = "サブフォルダ '$($sd.FullName)' に再解析ポイントが検出されました。" }
+      }
+      $subFiles = Get-ChildItem -LiteralPath $sd.FullName -File -Force -ErrorAction SilentlyContinue
+      foreach ($sf in $subFiles) {
+        if ($sf.Name.EndsWith(".md", [System.StringComparison]::OrdinalIgnoreCase)) {
+          $subHeader = Get-YamlHeaderLines $sf.FullName
+          if ($null -ne $subHeader) {
+            $subUuid = Get-YamlScalarValue $subHeader "UUID:"
+            if ($subUuid -and $subUuid.Trim().ToUpperInvariant() -eq $Uuid.Trim().ToUpperInvariant()) {
+              return @{ Error = "MANAGED_NOTE_OUT_OF_SCOPE"; Details = "管理対象ノートと同一UUIDのノートがサブフォルダ内に存在します: $($sf.FullName)" }
+            }
+          }
+        }
+      }
+    }
+
+    if ($folderUuids.Count -gt 1) {
+      return @{ Error = "FOLDER_UUID_MIXED"; Details = "フォルダ '$($dir.Name)' 内に複数の異なるUUIDが混在しています: $(($folderUuids | ForEach-Object { $_ }) -join ', ')" }
+    }
+
+    if ($hasTargetUuid) {
+      $matchedFolders += @{
+        DirectoryInfo = $dir
+        FolderName = $dir.Name
+        FullPath = $dir.FullName
+        ManagedNotes = $folderManagedNotes
+        UnmanagedFiles = $folderUnmanagedFiles
+      }
+    }
+  }
+
+  if ($matchedFolders.Count -eq 0) {
+    return @{ Error = "CUSTOMER_NOT_FOUND"; Details = "指定されたUUID ($Uuid) の証拠を持つ顧客フォルダが見つかりません。" }
+  }
+
+  $canonicalFolderName = Get-CanonicalCustomerFolderName $CompanyNameRaw $Uuid
+  $canonicalFolderFullPath = Join-Path $custRoot $canonicalFolderName
+
+  return @{
+    Error = $null
+    CustRoot = $custRoot
+    MatchedFolders = $matchedFolders
+    CanonicalFolderName = $canonicalFolderName
+    CanonicalFolderFullPath = $canonicalFolderFullPath
+    IsConflict = ($matchedFolders.Count -ge 2)
+  }
+}
+
+function Write-TransactionEvidenceSafe {
+  param(
+    [string]$TxDir,
+    [string]$TxId,
+    [string]$Type,
+    [hashtable]$Data
+  )
+  $filePath = Join-Path $TxDir "$TxId.$Type.json"
+  $jsonText = $Data | ConvertTo-Json -Depth 10
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($jsonText)
+  
+  $fs = [System.IO.FileStream]::new(
+    $filePath,
+    [System.IO.FileMode]::CreateNew,
+    [System.IO.FileAccess]::Write,
+    [System.IO.FileShare]::None
+  )
+  try {
+    $fs.Write($bytes, 0, $bytes.Length)
+    $fs.Flush($true)
+  } finally {
+    $fs.Close()
+    $fs.Dispose()
+  }
+
+  $readText = [System.IO.File]::ReadAllText($filePath, [System.Text.Encoding]::UTF8)
+  $readData = ConvertFrom-Json $readText
+  if ($null -eq $readData -or [string]$readData.txId -ne $TxId) {
+    throw "証拠ファイルの読み戻し検証に失敗しました: $filePath"
+  }
+  return $filePath
+}
+
+function New-MergeStagingOwnershipSafe {
+  param(
+    [string]$TxDir,
+    [string]$TxId
+  )
+  $stagingDir = Join-Path $TxDir "staging_$TxId"
+  $createRes = New-Win32ExclusiveDirectory $stagingDir
+  if (-not $createRes.Success) {
+    throw "排他的ステージングディレクトリの作成に失敗しました (Win32Error: $($createRes.ErrorCode)): $stagingDir"
+  }
+
+  $ownerMarkerPath = Join-Path $stagingDir ".fm-obsidian-merge-owner"
+  $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+  $tokenBytes = New-Object byte[] 32
+  $rng.GetBytes($tokenBytes)
+  $tokenHex = [BitConverter]::ToString($tokenBytes).Replace("-", "").ToLowerInvariant()
+
+  $fs = [System.IO.FileStream]::new(
+    $ownerMarkerPath,
+    [System.IO.FileMode]::CreateNew,
+    [System.IO.FileAccess]::Write,
+    [System.IO.FileShare]::None
+  )
+  try {
+    $b = [System.Text.Encoding]::UTF8.GetBytes($tokenHex)
+    $fs.Write($b, 0, $b.Length)
+    $fs.Flush($true)
+  } finally {
+    $fs.Close()
+    $fs.Dispose()
+  }
+
+  $readToken = [System.IO.File]::ReadAllText($ownerMarkerPath, [System.Text.Encoding]::UTF8).Trim()
+  if ($readToken -ne $tokenHex) {
+    throw "所有権マーカーの読み戻し検証に失敗しました: $ownerMarkerPath"
+  }
+
+  return @{
+    StagingDir = $stagingDir
+    OwnerToken = $tokenHex
+    OwnerMarkerPath = $ownerMarkerPath
+  }
+}
+
+function Get-JournalPropSafe($obj, [string]$propName) {
+  if ($null -eq $obj) { return $null }
+  if ($obj -is [System.Collections.IDictionary]) {
+    if ($obj.Contains($propName)) { return $obj[$propName] }
+    return $null
+  }
+  if ($null -ne $obj.PSObject -and $null -ne $obj.PSObject.Properties[$propName]) {
+    return $obj.PSObject.Properties[$propName].Value
+  }
+  return $null
+}
+
+function Set-JournalPropSafe($obj, [string]$propName, $val) {
+  if ($null -eq $obj) { return }
+  if ($obj -is [System.Collections.IDictionary]) {
+    $obj[$propName] = $val
+  } elseif ($null -ne $obj.PSObject -and $null -ne $obj.PSObject.Properties[$propName]) {
+    $obj.PSObject.Properties[$propName].Value = $val
+  }
+}
+
+function Get-JournalEntriesArray($obj) {
+  $raw = Get-JournalPropSafe $obj "entries"
+  $list = New-Object System.Collections.Generic.List[object]
+  if ($null -eq $raw) { return ,$list }
+  if ($raw -is [System.Collections.IDictionary]) {
+    $list.Add($raw)
+    return ,$list
+  }
+  if ($raw -is [System.Management.Automation.PSCustomObject] -and $null -ne (Get-JournalPropSafe $raw "Seq")) {
+    $list.Add($raw)
+    return ,$list
+  }
+  if ($raw -is [System.Collections.IEnumerable]) {
+    foreach ($item in $raw) {
+      $list.Add($item)
+    }
+    return ,$list
+  }
+  $list.Add($raw)
+  return ,$list
+}
+
+function Test-JournalContentEquality($expectedObj, $actualObj) {
+  if ($null -eq $expectedObj -or $null -eq $actualObj) { return $false }
+  try {
+    # Top-level checks
+    $expTxId = [string](Get-JournalPropSafe $expectedObj "txId")
+    $actTxId = [string](Get-JournalPropSafe $actualObj "txId")
+    if ($expTxId -ne $actTxId) { return $false }
+
+    $expUuid = [string](Get-JournalPropSafe $expectedObj "uuid")
+    $actUuid = [string](Get-JournalPropSafe $actualObj "uuid")
+    if ($expUuid -ne $actUuid) { return $false }
+
+    $expVault = [string](Get-JournalPropSafe $expectedObj "vaultRoot")
+    $actVault = [string](Get-JournalPropSafe $actualObj "vaultRoot")
+    if ($expVault -ne $actVault) { return $false }
+
+    $expFolder = [string](Get-JournalPropSafe $expectedObj "canonicalFolderName")
+    $actFolder = [string](Get-JournalPropSafe $actualObj "canonicalFolderName")
+    if ($expFolder -ne $actFolder) { return $false }
+
+    $expOwner = [string](Get-JournalPropSafe $expectedObj "ownerToken")
+    $actOwner = [string](Get-JournalPropSafe $actualObj "ownerToken")
+    if ($expOwner -ne $actOwner) { return $false }
+
+    $expRbStatus = [string](Get-JournalPropSafe $expectedObj "rollbackStatus")
+    $actRbStatus = [string](Get-JournalPropSafe $actualObj "rollbackStatus")
+    if ($expRbStatus -ne $actRbStatus) { return $false }
+
+    # Entries comparison
+    $expEntries = Get-JournalEntriesArray $expectedObj
+    $actEntries = Get-JournalEntriesArray $actualObj
+
+    if ($expEntries.Count -ne $actEntries.Count) { return $false }
+
+    for ($i = 0; $i -lt $expEntries.Count; $i++) {
+      $e1 = $expEntries[$i]
+      $e2 = $actEntries[$i]
+      
+      $seq1 = Get-JournalPropSafe $e1 "Seq"
+      $seq2 = Get-JournalPropSafe $e2 "Seq"
+      if ([int]$seq1 -ne [int]$seq2) { return $false }
+
+      $op1 = [string](Get-JournalPropSafe $e1 "OpType")
+      $op2 = [string](Get-JournalPropSafe $e2 "OpType")
+      if ($op1 -ne $op2) { return $false }
+
+      $src1 = [string](Get-JournalPropSafe $e1 "SourcePath")
+      $src2 = [string](Get-JournalPropSafe $e2 "SourcePath")
+      if ($src1 -ne $src2) { return $false }
+
+      $dst1 = [string](Get-JournalPropSafe $e1 "DestPath")
+      $dst2 = [string](Get-JournalPropSafe $e2 "DestPath")
+      if ($dst1 -ne $dst2) { return $false }
+
+      $sha1 = [string](Get-JournalPropSafe $e1 "ExpectedSha256")
+      $sha2 = [string](Get-JournalPropSafe $e2 "ExpectedSha256")
+      if ($sha1 -ne $sha2) { return $false }
+
+      $size1 = Get-JournalPropSafe $e1 "ExpectedSizeBytes"
+      $size2 = Get-JournalPropSafe $e2 "ExpectedSizeBytes"
+      if (($null -eq $size1) -ne ($null -eq $size2)) { return $false }
+      if ($null -ne $size1 -and [long]$size1 -ne [long]$size2) { return $false }
+
+      $tok1 = [string](Get-JournalPropSafe $e1 "OwnerToken")
+      $tok2 = [string](Get-JournalPropSafe $e2 "OwnerToken")
+      if ($tok1 -ne $tok2) { return $false }
+
+      $st1 = [string](Get-JournalPropSafe $e1 "State")
+      $st2 = [string](Get-JournalPropSafe $e2 "State")
+      if ($st1 -ne $st2) { return $false }
+    }
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Test-JournalStructureValid {
+  param(
+    $JournalData,
+    [string]$ExpectedTxId = "",
+    [string]$ExpectedOwnerToken = ""
+  )
+  if ($null -eq $JournalData) { return $false }
+  try {
+    $jTxId = [string](Get-JournalPropSafe $JournalData "txId")
+    if ([string]::IsNullOrWhiteSpace($jTxId)) { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedTxId) -and $jTxId -ne $ExpectedTxId) { return $false }
+
+    $jUuid = [string](Get-JournalPropSafe $JournalData "uuid")
+    if ([string]::IsNullOrWhiteSpace($jUuid)) { return $false }
+
+    $jVault = [string](Get-JournalPropSafe $JournalData "vaultRoot")
+    if ([string]::IsNullOrWhiteSpace($jVault)) { return $false }
+
+    $jFolder = [string](Get-JournalPropSafe $JournalData "canonicalFolderName")
+    if ([string]::IsNullOrWhiteSpace($jFolder)) { return $false }
+
+    $jOwner = [string](Get-JournalPropSafe $JournalData "ownerToken")
+    if ([string]::IsNullOrWhiteSpace($jOwner)) { return $false }
+    if (-not [string]::IsNullOrWhiteSpace($ExpectedOwnerToken) -and $jOwner -ne $ExpectedOwnerToken) { return $false }
+
+    $entryList = Get-JournalEntriesArray $JournalData
+
+    $allowedOpTypes = @("MOVE_FILE", "MOVE_FILE_STAGING_TO_CANONICAL", "MOVE_OWNERSHIP_MARKER", "MOVE_DIRECTORY")
+    $allowedStates = @("PENDING", "COMPLETED", "ROLLED_BACK")
+
+    $expectedSeq = 1
+    $seenSeq = New-Object System.Collections.Generic.HashSet[int]
+
+    foreach ($e in $entryList) {
+      if ($null -eq $e) { return $false }
+      $seq = Get-JournalPropSafe $e "Seq"
+      if ($null -eq $seq) { return $false }
+      $seqInt = [int]$seq
+      if ($seqInt -ne $expectedSeq -or $seenSeq.Contains($seqInt)) { return $false }
+      [void]$seenSeq.Add($seqInt)
+      $expectedSeq++
+
+      $op = [string](Get-JournalPropSafe $e "OpType")
+      if ($allowedOpTypes -notcontains $op) { return $false }
+
+      $st = [string](Get-JournalPropSafe $e "State")
+      if ($allowedStates -notcontains $st) { return $false }
+
+      $src = [string](Get-JournalPropSafe $e "SourcePath")
+      $dst = [string](Get-JournalPropSafe $e "DestPath")
+      if ([string]::IsNullOrWhiteSpace($src) -or [string]::IsNullOrWhiteSpace($dst)) { return $false }
+
+      if ($op -in @("MOVE_FILE", "MOVE_FILE_STAGING_TO_CANONICAL")) {
+        $sha = [string](Get-JournalPropSafe $e "ExpectedSha256")
+        $size = Get-JournalPropSafe $e "ExpectedSizeBytes"
+        if ([string]::IsNullOrWhiteSpace($sha) -or $null -eq $size -or [long]$size -lt 0) { return $false }
+      } elseif ($op -eq "MOVE_OWNERSHIP_MARKER") {
+        $sha = [string](Get-JournalPropSafe $e "ExpectedSha256")
+        $size = Get-JournalPropSafe $e "ExpectedSizeBytes"
+        $tok = [string](Get-JournalPropSafe $e "OwnerToken")
+        if ([string]::IsNullOrWhiteSpace($sha) -or $null -eq $size -or [string]::IsNullOrWhiteSpace($tok)) { return $false }
+      } elseif ($op -eq "MOVE_DIRECTORY") {
+        $tok = [string](Get-JournalPropSafe $e "OwnerToken")
+        if ([string]::IsNullOrWhiteSpace($tok)) { return $false }
+      }
+    }
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Write-JournalEvidenceSafe {
+  param(
+    [string]$TxDir,
+    [string]$TxId,
+    $Data
+  )
+  $filePath = Join-Path $TxDir "$TxId.journal.json"
+  $tmpPath = Join-Path $TxDir "$TxId.journal.json.tmp"
+  $jsonText = $Data | ConvertTo-Json -Depth 10
+  $bytes = [System.Text.Encoding]::UTF8.GetBytes($jsonText)
+
+  # 1. Write to temporary file with Flush(true)
+  $fs = [System.IO.FileStream]::new(
+    $tmpPath,
+    [System.IO.FileMode]::Create,
+    [System.IO.FileAccess]::Write,
+    [System.IO.FileShare]::None
+  )
+  try {
+    $fs.Write($bytes, 0, $bytes.Length)
+    $fs.Flush($true)
+  } finally {
+    $fs.Close()
+    $fs.Dispose()
+  }
+
+  # Crash Window A: tmp written and flushed, before atomic promotion
+  Invoke-TestCrashHook "A"
+
+  # 2. Read-back verify temporary file
+  $readTmpText = [System.IO.File]::ReadAllText($tmpPath, [System.Text.Encoding]::UTF8)
+  $readTmpData = ConvertFrom-Json $readTmpText
+  if (-not (Test-JournalStructureValid $readTmpData $TxId) -or -not (Test-JournalContentEquality $Data $readTmpData)) {
+    if (Test-Path -LiteralPath $tmpPath) { Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue }
+    throw "一時ジャーナルファイルの読み戻し完全検証に失敗しました: $tmpPath"
+  }
+
+  # 3. Atomic replace into live journal path
+  $ok = [Win32DurableJournalHelper]::MoveFileEx(
+    $tmpPath,
+    $filePath,
+    [Win32DurableJournalHelper]::MOVEFILE_REPLACE_EXISTING -bor [Win32DurableJournalHelper]::MOVEFILE_WRITE_THROUGH
+  )
+  if (-not $ok) {
+    $winErr = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if (Test-Path -LiteralPath $tmpPath) { Remove-Item -LiteralPath $tmpPath -Force -ErrorAction SilentlyContinue }
+    throw "Win32 MoveFileEx によるジャーナルのアトミック置換に失敗しました (ErrorCode: $winErr): $filePath"
+  }
+
+  # Crash Window B: after atomic promotion, before post-promotion verify
+  Invoke-TestCrashHook "B"
+
+  # 4. Post-promotion verification of live journal
+  $readLiveText = [System.IO.File]::ReadAllText($filePath, [System.Text.Encoding]::UTF8)
+  $readLiveData = ConvertFrom-Json $readLiveText
+  if (-not (Test-JournalStructureValid $readLiveData $TxId) -or -not (Test-JournalContentEquality $Data $readLiveData)) {
+    throw "本番ジャーナルファイルのアトミック昇格後検証に失敗しました: $filePath"
+  }
+
+  return $filePath
+}
+
+function Get-LockAcquisitionErrorClass($Exception) {
+  if ($null -eq $Exception) { return "UNEXPECTED_IO" }
+  $curEx = $Exception
+  if ($curEx -is [System.Management.Automation.ErrorRecord]) {
+    $curEx = $curEx.Exception
+  }
+
+  while ($null -ne $curEx) {
+    if ($curEx -is [System.UnauthorizedAccessException] -or $curEx -is [System.Security.SecurityException]) {
+      return "ACCESS_DENIED"
+    }
+    if ($curEx -is [System.IO.DirectoryNotFoundException] -or
+        $curEx -is [System.IO.PathTooLongException] -or
+        $curEx -is [System.ArgumentException] -or
+        $curEx -is [System.NotSupportedException]) {
+      return "INVALID_PATH"
+    }
+    if ($curEx -is [System.IO.IOException]) {
+      $hr = [int]$curEx.HResult
+      # Win32 ERROR_SHARING_VIOLATION (0x80070020), ERROR_LOCK_VIOLATION (0x80070021)
+      if ($hr -eq [int]0x80070020 -or $hr -eq [int]0x80070021 -or ($hr -band 0xFFFF) -eq 0x20 -or ($hr -band 0xFFFF) -eq 0x21) {
+        return "CONTENTION"
+      }
+      # Win32 ERROR_ACCESS_DENIED (0x80070005)
+      if ($hr -eq [int]0x80070005 -or ($hr -band 0xFFFF) -eq 0x05) {
+        return "ACCESS_DENIED"
+      }
+      # Win32 ERROR_PATH_NOT_FOUND (0x80070003), ERROR_FILE_NOT_FOUND (0x80070002), ERROR_BAD_PATHNAME (0x800700A1)
+      if ($hr -eq [int]0x80070003 -or $hr -eq [int]0x80070002 -or $hr -eq [int]0x800700A1 -or
+          ($hr -band 0xFFFF) -eq 0x03 -or ($hr -band 0xFFFF) -eq 0x02 -or ($hr -band 0xFFFF) -eq 0xA1) {
+        return "INVALID_PATH"
+      }
+      return "UNEXPECTED_IO"
+    }
+    $curEx = $curEx.InnerException
+  }
+  return "UNEXPECTED_IO"
+}
+
+function Test-RollbackCompleteSemanticValid($JournalObj, [string]$TxId, [string]$TxDir) {
+  if ($null -eq $JournalObj -or [string]::IsNullOrWhiteSpace($TxId) -or [string]::IsNullOrWhiteSpace($TxDir)) {
+    return $false
+  }
+  try {
+    # 1. Structural validity
+    if (-not (Test-JournalStructureValid $JournalObj $TxId)) { return $false }
+    if ((Get-JournalPropSafe $JournalObj "txId") -ne $TxId) { return $false }
+    if ((Get-JournalPropSafe $JournalObj "rollbackStatus") -ne "ROLLBACK_COMPLETE") { return $false }
+
+    # 2. No committed evidence exists
+    $committedPath = Join-Path $TxDir "$TxId.committed.json"
+    if (Test-Path -LiteralPath $committedPath) { return $false }
+
+    # 3. Check every entry is ROLLED_BACK with filesystem correspondence
+    $entries = Get-JournalEntriesArray $JournalObj
+    if ($entries.Count -eq 0) {
+      return $true # empty transaction rollback complete
+    }
+
+    foreach ($e in $entries) {
+      if ($null -eq $e) { return $false }
+      $eState = Get-JournalPropSafe $e "State"
+      if ($eState -ne "ROLLED_BACK") { return $false }
+
+      $op = Get-JournalPropSafe $e "OpType"
+      $src = Get-JournalPropSafe $e "SourcePath"
+      $dst = Get-JournalPropSafe $e "DestPath"
+
+      if ([string]::IsNullOrWhiteSpace($src) -or [string]::IsNullOrWhiteSpace($dst)) { return $false }
+
+      # DestPath must be absent after rollback
+      if (Test-Path -LiteralPath $dst) { return $false }
+
+      # SourcePath must exist with correct type and hash
+      if ($op -in @("MOVE_FILE", "MOVE_FILE_STAGING_TO_CANONICAL")) {
+        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { return $false }
+        $expSha = Get-JournalPropSafe $e "ExpectedSha256"
+        if (-not [string]::IsNullOrWhiteSpace($expSha)) {
+          $actSha = Get-FileSha256Raw $src
+          if ($actSha -ne $expSha) { return $false }
+        }
+      } elseif ($op -eq "MOVE_DIRECTORY") {
+        if (-not (Test-Path -LiteralPath $src -PathType Container)) { return $false }
+      } else {
+        return $false # unknown op type
+      }
+    }
+
+    return $true
+  } catch {
+    return $false
+  }
+}
+
+function Complete-RollbackEvidenceCleanup([string]$TxId, [string]$TxDir, $JournalObj) {
+  if ([string]::IsNullOrWhiteSpace($TxId) -or [string]::IsNullOrWhiteSpace($TxDir)) { return }
+  try {
+    # 1. Clean staging directory if present and empty
+    $stagingDir = Join-Path $TxDir "staging_$TxId"
+    if (Test-Path -LiteralPath $stagingDir -PathType Container) {
+      $marker = Join-Path $stagingDir ".fm-obsidian-merge-owner"
+      if (Test-Path -LiteralPath $marker) {
+        Remove-Item -LiteralPath $marker -Force -ErrorAction SilentlyContinue
+      }
+      $remaining = @(Get-ChildItem -LiteralPath $stagingDir -Force -ErrorAction SilentlyContinue)
+      if ($remaining.Count -eq 0) {
+        Remove-Item -LiteralPath $stagingDir -Force -ErrorAction SilentlyContinue
+      }
+    }
+
+    # 2. Remove inprogress marker
+    $ipPath = Join-Path $TxDir "$TxId.inprogress.json"
+    if (Test-Path -LiteralPath $ipPath) {
+      Remove-Item -LiteralPath $ipPath -Force -ErrorAction SilentlyContinue
+    }
+  } catch {}
+}
+
+function Complete-RollbackTerminalState {
+  param($JournalObj, [string]$TxId, [string]$TxDir, [string]$Status)
+  # $Status is "ROLLBACK_COMPLETE" or "ROLLBACK_FAILED"
+  if ($null -eq $JournalObj) { return @{ Persisted = $false; Error = "no journal object" } }
+  if ([string]::IsNullOrWhiteSpace($TxDir) -or [string]::IsNullOrWhiteSpace($TxId)) {
+    return @{ Persisted = $false; Error = "txDir/txId 未指定" }
+  }
+  try {
+    Set-JournalPropSafe $JournalObj "rollbackStatus" $Status
+    [void](Write-JournalEvidenceSafe $TxDir $TxId $JournalObj)
+    return @{ Persisted = $true; Error = $null }
+  } catch {
+    return @{ Persisted = $false; Error = $_.Exception.Message }
+  }
+}
+
+function Invoke-OptionBRollback {
+  param(
+    $Journal,
+    [string]$TxId,
+    [string]$TxDir
+  )
+  $rollbackFailed = $false
+  $rollbackDetails = @()
+
+  $journalObj = $null
+  $liveJournalPath = if (-not [string]::IsNullOrWhiteSpace($TxDir) -and -not [string]::IsNullOrWhiteSpace($TxId)) {
+    Join-Path $TxDir "$TxId.journal.json"
+  } else { $null }
+
+  if ($null -ne $Journal -and ($Journal -is [System.Collections.IDictionary] -or $null -ne (Get-JournalPropSafe $Journal "txId") -or $null -ne (Get-JournalPropSafe $Journal "entries"))) {
+    $journalObj = $Journal
+  } elseif ($null -ne $liveJournalPath -and (Test-Path -LiteralPath $liveJournalPath)) {
+    try {
+      $rawText = [System.IO.File]::ReadAllText($liveJournalPath, [System.Text.Encoding]::UTF8)
+      $journalObj = ConvertFrom-Json $rawText
+    } catch {
+      return @{
+        Success = $false
+        TerminalStatePersisted = $false
+        Details = "ジャーナルファイルの読み込みまたはJSON解析に失敗しました: $liveJournalPath / ジャーナル読取不能のため終端状態を書き換えません (indeterminate)"
+      }
+    }
+  }
+
+  # B4-N7: Missing journal check
+  if ($null -eq $journalObj) {
+    $hasEvidence = $false
+    if (-not [string]::IsNullOrWhiteSpace($TxDir) -and -not [string]::IsNullOrWhiteSpace($TxId)) {
+      $ipPath = Join-Path $TxDir "$TxId.inprogress.json"
+      $stgPath = Join-Path $TxDir "staging_$TxId"
+      if ((Test-Path -LiteralPath $ipPath) -or (Test-Path -LiteralPath $stgPath)) {
+        $hasEvidence = $true
+      }
+    }
+    if ($hasEvidence) {
+      return @{
+        Success = $false
+        TerminalStatePersisted = $false
+        Details = "トランザクション証跡(inprogress/staging)が存在しますがジャーナルが存在しないためロールバック不能 (Fail-Closed) / ジャーナル不存在のため rollbackStatus の永続性は主張しません"
+      }
+    }
+    return @{
+      Success = $true
+      TerminalStatePersisted = $false
+      Details = "ジャーナルエントリなし (変更なし)"
+    }
+  }
+
+  # Structural validation
+  if (-not (Test-JournalStructureValid $journalObj $TxId)) {
+    return @{
+      Success = $false
+      TerminalStatePersisted = $false
+      Details = "ジャーナルの構造検証に失敗したためロールバックを拒否します (不正または改変されたジャーナル) / ジャーナル不正のため終端状態を書き換えません (indeterminate)"
+    }
+  }
+
+  $entryList = Get-JournalEntriesArray $journalObj
+  if ($entryList.Count -eq 0) {
+    $term = Complete-RollbackTerminalState $journalObj $TxId $TxDir "ROLLBACK_COMPLETE"
+    if (-not $term.Persisted) {
+      return @{
+        Success = $false
+        TerminalStatePersisted = $false
+        Details = "ジャーナルエントリなし (変更なし) / 終端 rollbackStatus (ROLLBACK_COMPLETE) の永続化に失敗したため、ロールバック完了を主張できません: $($term.Error)"
+      }
+    }
+    return @{
+      Success = $true
+      TerminalStatePersisted = $true
+      Details = "ジャーナルエントリなし (変更なし)"
+    }
+  }
+
+  # Phase 1: Preflight / Option B rules (Check PENDING state)
+  $allowedOpTypes = @("MOVE_FILE", "MOVE_FILE_STAGING_TO_CANONICAL", "MOVE_OWNERSHIP_MARKER", "MOVE_DIRECTORY")
+  foreach ($entry in $entryList) {
+    $eState = [string](Get-JournalPropSafe $entry "State")
+    $eOp = [string](Get-JournalPropSafe $entry "OpType")
+    $eSrc = [string](Get-JournalPropSafe $entry "SourcePath")
+    $eDst = [string](Get-JournalPropSafe $entry "DestPath")
+
+    if ($eState -eq "PENDING") {
+      $term = Complete-RollbackTerminalState $journalObj $TxId $TxDir "ROLLBACK_FAILED"
+      return @{
+        Success = $false
+        TerminalStatePersisted = [bool]$term.Persisted
+        Details = "PENDING状態のジャーナルエントリ ('$eOp') は破壊的Undo禁止のためFail-Closed (Src: $eSrc / Dst: $eDst)"
+      }
+    }
+    if ($allowedOpTypes -notcontains $eOp) {
+      return @{
+        Success = $false
+        TerminalStatePersisted = $false
+        Details = "未知のOpType ('$eOp') が存在するため、ロールバックを中断します / ジャーナル不正のため終端状態を書き換えません (indeterminate)"
+      }
+    }
+  }
+
+  # Phase 2: Reverse-order rollback of COMPLETED entries (Seq descending)
+  for ($i = $entryList.Count - 1; $i -ge 0; $i--) {
+    $entry = $entryList[$i]
+    $eState = [string](Get-JournalPropSafe $entry "State")
+    if ($eState -eq "COMPLETED") {
+      $op = [string](Get-JournalPropSafe $entry "OpType")
+      $dst = [string](Get-JournalPropSafe $entry "DestPath")
+      $src = [string](Get-JournalPropSafe $entry "SourcePath")
+      $expSha = [string](Get-JournalPropSafe $entry "ExpectedSha256")
+      $expSize = Get-JournalPropSafe $entry "ExpectedSizeBytes"
+      $ownerToken = [string](Get-JournalPropSafe $entry "OwnerToken")
+
+      try {
+        if ($op -in @("MOVE_FILE", "MOVE_FILE_STAGING_TO_CANONICAL")) {
+          if ((Test-Path -LiteralPath $dst) -and (-not (Test-Path -LiteralPath $src))) {
+            $curSha = Get-FileSha256Raw $dst
+            $curSize = (Get-Item -LiteralPath $dst).Length
+            if ($curSha -eq $expSha -and $curSize -eq $expSize) {
+              $srcParent = [System.IO.Path]::GetDirectoryName($src)
+              if (-not [string]::IsNullOrWhiteSpace($srcParent) -and -not (Test-Path -LiteralPath $srcParent)) {
+                [void][System.IO.Directory]::CreateDirectory($srcParent)
+              }
+              [System.IO.File]::Move($dst, $src)
+
+              # Verify reverse move
+              $restoredSha = Get-FileSha256Raw $src
+              $restoredSize = (Get-Item -LiteralPath $src).Length
+              if ($restoredSha -ne $expSha -or $restoredSize -ne $expSize -or (Test-Path -LiteralPath $dst)) {
+                throw "ファイル復元後のディスク検証に失敗しました: $src"
+              }
+
+              Set-JournalPropSafe $entry "State" "ROLLED_BACK"
+              if (-not [string]::IsNullOrWhiteSpace($TxDir) -and -not [string]::IsNullOrWhiteSpace($TxId)) {
+                [void](Write-JournalEvidenceSafe $TxDir $TxId $journalObj)
+              }
+              Invoke-TestCrashHook "F"
+            } else {
+              $rollbackFailed = $true
+              $rollbackDetails += "COMPLETEDファイルのSHA256/サイズ不一致または改変検知 (Dst: $dst)"
+              break
+            }
+          } else {
+            $rollbackFailed = $true
+            $rollbackDetails += "移動元が存在しないか移動先が存在 (Dst: $dst / Src: $src)"
+            break
+          }
+        }
+        elseif ($op -eq "MOVE_OWNERSHIP_MARKER") {
+          if ((Test-Path -LiteralPath $dst) -and (-not (Test-Path -LiteralPath $src))) {
+            $curToken = (Get-Content -LiteralPath $dst -Raw -Encoding UTF8).Trim()
+            $curSha = Get-FileSha256Raw $dst
+            $curSize = (Get-Item -LiteralPath $dst).Length
+            if ($curToken -eq $ownerToken -and $curSha -eq $expSha -and $curSize -eq $expSize) {
+              $srcParent = [System.IO.Path]::GetDirectoryName($src)
+              if (-not [string]::IsNullOrWhiteSpace($srcParent) -and -not (Test-Path -LiteralPath $srcParent)) {
+                [void][System.IO.Directory]::CreateDirectory($srcParent)
+              }
+              [System.IO.File]::Move($dst, $src)
+
+              $restoredToken = (Get-Content -LiteralPath $src -Raw -Encoding UTF8).Trim()
+              $restoredSha = Get-FileSha256Raw $src
+              $restoredSize = (Get-Item -LiteralPath $src).Length
+              if ($restoredToken -ne $ownerToken -or $restoredSha -ne $expSha -or $restoredSize -ne $expSize -or (Test-Path -LiteralPath $dst)) {
+                throw "マーカー復元後のディスク検証に失敗しました: $src"
+              }
+
+              Set-JournalPropSafe $entry "State" "ROLLED_BACK"
+              if (-not [string]::IsNullOrWhiteSpace($TxDir) -and -not [string]::IsNullOrWhiteSpace($TxId)) {
+                [void](Write-JournalEvidenceSafe $TxDir $TxId $journalObj)
+              }
+              Invoke-TestCrashHook "F"
+            } else {
+              $rollbackFailed = $true
+              $rollbackDetails += "所有権マーカーのトークンまたはSHA不一致 (Dst: $dst)"
+              break
+            }
+          } else {
+            $rollbackFailed = $true
+            $rollbackDetails += "マーカー移動元が存在しないか移動先が存在 (Dst: $dst / Src: $src)"
+            break
+          }
+        }
+        elseif ($op -eq "MOVE_DIRECTORY") {
+          if ((Test-Path -LiteralPath $dst -PathType Container) -and (-not (Test-Path -LiteralPath $src))) {
+            $markerPath = Join-Path $dst ".fm-obsidian-merge-owner"
+            if (Test-Path -LiteralPath $markerPath -PathType Leaf) {
+              $tokenOnDisk = (Get-Content -LiteralPath $markerPath -Raw -Encoding UTF8).Trim()
+              if (-not [string]::IsNullOrWhiteSpace($ownerToken) -and $tokenOnDisk -eq $ownerToken) {
+                [System.IO.Directory]::Move($dst, $src)
+
+                $restoredMarker = Join-Path $src ".fm-obsidian-merge-owner"
+                $restoredToken = if (Test-Path -LiteralPath $restoredMarker) { (Get-Content -LiteralPath $restoredMarker -Raw -Encoding UTF8).Trim() } else { "" }
+                if ($restoredToken -ne $ownerToken -or (Test-Path -LiteralPath $dst)) {
+                  throw "ディレクトリ復元後のディスク検証に失敗しました: $src"
+                }
+
+                Set-JournalPropSafe $entry "State" "ROLLED_BACK"
+                if (-not [string]::IsNullOrWhiteSpace($TxDir) -and -not [string]::IsNullOrWhiteSpace($TxId)) {
+                  [void](Write-JournalEvidenceSafe $TxDir $TxId $journalObj)
+                }
+                Invoke-TestCrashHook "F"
+              } else {
+                $rollbackFailed = $true
+                $rollbackDetails += "ディレクトリ所有権マーカーのトークン不一致または不正のためディレクトリのロールバックを禁止します (Dst: $dst)"
+                break
+              }
+            } else {
+              $rollbackFailed = $true
+              $rollbackDetails += "ディレクトリ所有権マーカーが存在しないためディレクトリのロールバックを禁止します (Dst: $dst)"
+              break
+            }
+          } else {
+            $rollbackFailed = $true
+            $rollbackDetails += "ロールバック元ディレクトリが存在しないか移動先が存在 (Dst: $dst / Src: $src)"
+            break
+          }
+        }
+      } catch {
+        $rollbackFailed = $true
+        $rollbackDetails += "ロールバック処理中に例外が発生しました: $dst -> $src ($($_.Exception.Message))"
+        break
+      }
+    }
+  }
+
+  # Persist terminal rollback state
+  $status = if ($rollbackFailed) { "ROLLBACK_FAILED" } else { "ROLLBACK_COMPLETE" }
+  $term = Complete-RollbackTerminalState $journalObj $TxId $TxDir $status
+
+  if (-not $term.Persisted) {
+    return @{
+      Success = $false
+      TerminalStatePersisted = $false
+      Details = (($rollbackDetails + @("終端 rollbackStatus ($status) の永続化に失敗したため、ロールバック完了を主張できません: $($term.Error)")) -join " / ")
+    }
+  }
+
+  return @{
+    Success = (-not $rollbackFailed)
+    TerminalStatePersisted = $true
+    Details = if ($rollbackFailed) { ($rollbackDetails -join " / ") } else { "ロールバック完了" }
+  }
+}
+
+function Invoke-PlanCustomerFolderMerge {
+  param([hashtable]$Payload)
+
+  $reqId = if ($Payload.ContainsKey("requestId")) { [string]$Payload.requestId } else { $null }
+  $rawVaultRoot = if ($Payload.ContainsKey("VaultRoot")) { [string]$Payload.VaultRoot } else { "" }
+  $uuid = if ($Payload.ContainsKey("pk_CLIENT")) { [string]$Payload.pk_CLIENT } else { "" }
+  $nameRaw = if ($Payload.ContainsKey("companyNameRaw")) { [string]$Payload.companyNameRaw } else { "" }
+
+  if ([string]::IsNullOrWhiteSpace($rawVaultRoot)) {
+    Write-Output (New-MergeResponse $reqId "NG" "INVALID_REQUEST" "VaultRootが指定されていません。")
+    return
+  }
+
+  $vaultRoot = Resolve-Win32CanonicalPath $rawVaultRoot
+  if ([string]::IsNullOrWhiteSpace($vaultRoot) -or -not (Test-Path -LiteralPath $vaultRoot)) {
+    Write-Output (New-MergeResponse $reqId "NG" "INVALID_REQUEST" "VaultRootが存在しないか、正規化に失敗しました: $rawVaultRoot")
+    return
+  }
+  if (-not (Test-UciUuidFormat $uuid)) {
+    Write-Output (New-MergeResponse $reqId "NG" "INVALID_UUID_FORMAT" "pk_CLIENTが有効なUUID形式ではありません。")
+    return
+  }
+
+  # Lock Acquisition Phase (NH-1, NM-1, NM-2)
+  $txDir = Join-Path $vaultRoot ".fm-obsidian-bridge-transactions"
+  if (-not (Test-Path -LiteralPath $txDir)) { [void][System.IO.Directory]::CreateDirectory($txDir) }
+
+  $lock = $null
+  try {
+    $lock = [System.IO.FileStream]::new(
+      (Join-Path $txDir "ACTIVE.lock"),
+      [System.IO.FileMode]::OpenOrCreate,
+      [System.IO.FileAccess]::ReadWrite,
+      [System.IO.FileShare]::None
+    )
+  } catch {
+    $errClass = Get-LockAcquisitionErrorClass $_.Exception
+    if ($errClass -eq "CONTENTION") {
+      Write-Output (New-MergeResponse $reqId "NG" "MERGE_OPERATION_IN_PROGRESS" "他の操作が実行中です。しばらく待ってから再試行してください。")
+    } else {
+      Write-Output (New-MergeResponse $reqId "NG" "MERGE_OPERATION_FAILED" "ロックの取得に失敗しました ($errClass): $($_.Exception.Message)")
+    }
+    return
+  }
+
+  try {
+    # B-5 & NH-2: Per-transaction recovery pairing with Retain-and-Classify validator
+    $inProgressFiles = @(Get-ChildItem -LiteralPath $txDir -Filter "*.inprogress.json" -File -ErrorAction SilentlyContinue)
+    $unresolvedTxFound = $false
+    $unresolvedTxDiag = $null
+    foreach ($ipFile in $inProgressFiles) {
+      $txIdMatch = [regex]::Match($ipFile.Name, "^(.+)\.inprogress\.json$")
+      if ($txIdMatch.Success) {
+        $curTxId = $txIdMatch.Groups[1].Value
+        $matchingCommitted = Join-Path $txDir "$curTxId.committed.json"
+        if (-not (Test-Path -LiteralPath $matchingCommitted)) {
+          # Check if this transaction is a valid ROLLBACK_COMPLETE terminal state (NH-2 Retain-and-Classify)
+          $matchingJournal = Join-Path $txDir "$curTxId.journal.json"
+          $isRollbackComplete = $false
+          if (Test-Path -LiteralPath $matchingJournal) {
+            try {
+              $jRaw = [System.IO.File]::ReadAllText($matchingJournal, [System.Text.Encoding]::UTF8)
+              $jObj = ConvertFrom-Json $jRaw
+              if (Test-RollbackCompleteSemanticValid $jObj $curTxId $txDir) {
+                $isRollbackComplete = $true
+              }
+            } catch {}
+          }
+
+          if (-not $isRollbackComplete) {
+            $unresolvedTxFound = $true
+            if (Test-Path -LiteralPath $matchingJournal) {
+              try {
+                $jRaw = [System.IO.File]::ReadAllText($matchingJournal, [System.Text.Encoding]::UTF8)
+                $jObj = ConvertFrom-Json $jRaw
+                if (Test-JournalStructureValid $jObj $curTxId) {
+                  $jEntries = Get-JournalEntriesArray $jObj
+                  $compCount = @($jEntries | Where-Object { (Get-JournalPropSafe $_ 'State') -eq 'COMPLETED' }).Count
+                  $pendCount = @($jEntries | Where-Object { (Get-JournalPropSafe $_ 'State') -eq 'PENDING' }).Count
+                  $rbCount = @($jEntries | Where-Object { (Get-JournalPropSafe $_ 'State') -eq 'ROLLED_BACK' }).Count
+                  $unresolvedTxDiag = "txId: $curTxId, entries: $($jEntries.Count), completed: $compCount, pending: $pendCount, rolledBack: $rbCount, rollbackStatus: $(Get-JournalPropSafe $jObj 'rollbackStatus')"
+                }
+              } catch {}
+            }
+            break
+          }
+        }
+      }
+    }
+    if ($unresolvedTxFound) {
+      $msg = if ($null -ne $unresolvedTxDiag) { "未解決のトランザクションインプログレスマーカーが存在します ($unresolvedTxDiag)。" } else { "未解決のトランザクションインプログレスマーカーが存在します。" }
+      Write-Output (New-MergeResponse $reqId "NG" "MERGE_RECOVERY_REQUIRED" $msg)
+      return
+    }
+
+    $topo = Get-CustomerMergeTopology $vaultRoot $uuid $nameRaw
+    if ($null -ne $topo.Error) {
+      Write-Output (New-MergeResponse $reqId "NG" $topo.Error $topo.Details)
+      return
+    }
+
+    $canonicalFolderName = $topo.CanonicalFolderName
+    $canonicalExistsInSet = $false
+    foreach ($mf in $topo.MatchedFolders) {
+      if ($mf.FolderName -eq $canonicalFolderName) {
+        $canonicalExistsInSet = $true
+        break
+      }
+    }
+    $allExistingFolders = Get-ChildItem -LiteralPath $topo.CustRoot -Directory -Force -ErrorAction SilentlyContinue
+    $canonicalExistsOnDisk = ($allExistingFolders | Where-Object { $_.Name -eq $canonicalFolderName })
+    if ($canonicalExistsOnDisk -and (-not $canonicalExistsInSet)) {
+      Write-Output (New-MergeResponse $reqId "NG" "CANONICAL_FOLDER_NO_UUID_EVIDENCE" "canonicalフォルダ '$canonicalFolderName' が存在しますが、対象UUIDの証拠を持たないため統合計画を生成できません。")
+      return
+    }
+
+    $allManagedNotes = @()
+    $globalNoteTypes = New-Object System.Collections.Generic.HashSet[string]
+    $allSourceFolderNames = @()
+
+    foreach ($f in $topo.MatchedFolders) {
+      $allSourceFolderNames += $f.FolderName
+      foreach ($n in $f.ManagedNotes) {
+        if ($globalNoteTypes.Contains($n.NoteType)) {
+          Write-Output (New-MergeResponse $reqId "NG" "DUPLICATE_NOTE_TYPE" "マージ対象フォルダ間で同一noteType('$($n.NoteType)')のノートが重複しています: $($n.FileName)")
+          return
+        }
+        [void]$globalNoteTypes.Add($n.NoteType)
+        $allManagedNotes += $n
+      }
+    }
+
+    $token = New-MergePlanTokenV3 $vaultRoot $uuid $canonicalFolderName $allSourceFolderNames $allManagedNotes
+
+    $moves = @()
+    foreach ($n in $allManagedNotes) {
+      $targetPath = Join-Path $topo.CanonicalFolderFullPath $n.FileName
+      $moves += [ordered]@{
+        sourcePath = $n.FullPath
+        targetPath = $targetPath
+        noteType = $n.NoteType
+        sizeBytes = $n.SizeBytes
+        sha256 = $n.Sha256
+      }
+    }
+
+    $planData = [ordered]@{
+      canonicalFolderName = $canonicalFolderName
+      sourceFolders = $allSourceFolderNames
+      managedFilesCount = $allManagedNotes.Count
+      moves = $moves
+    }
+
+    Write-Output (New-MergeResponse $reqId "OK" "MERGE_PLAN_READY" "マージ計画を正常に生成しました。" -extra @{ planToken = $token; plan = $planData })
+  } finally {
+    if ($null -ne $lock) {
+      $lock.Close()
+      $lock.Dispose()
+    }
+  }
+}
+
+function Invoke-ApplyCustomerFolderMerge {
+  param([hashtable]$Payload)
+
+  $reqId = if ($Payload.ContainsKey("requestId")) { [string]$Payload.requestId } else { $null }
+  $rawVaultRoot = if ($Payload.ContainsKey("VaultRoot")) { [string]$Payload.VaultRoot } else { "" }
+  $uuid = if ($Payload.ContainsKey("pk_CLIENT")) { [string]$Payload.pk_CLIENT } else { "" }
+  $nameRaw = if ($Payload.ContainsKey("companyNameRaw")) { [string]$Payload.companyNameRaw } else { "" }
+  $reqToken = if ($Payload.ContainsKey("planToken")) { [string]$Payload.planToken } else { "" }
+
+  if ([string]::IsNullOrWhiteSpace($rawVaultRoot)) {
+    Write-Output (New-MergeResponse $reqId "NG" "INVALID_REQUEST" "VaultRootが指定されていません。")
+    return
+  }
+
+  $vaultRoot = Resolve-Win32CanonicalPath $rawVaultRoot
+  if ([string]::IsNullOrWhiteSpace($vaultRoot) -or -not (Test-Path -LiteralPath $vaultRoot)) {
+    Write-Output (New-MergeResponse $reqId "NG" "INVALID_REQUEST" "VaultRootが存在しないか、正規化に失敗しました: $rawVaultRoot")
+    return
+  }
+  if (-not (Test-UciUuidFormat $uuid)) {
+    Write-Output (New-MergeResponse $reqId "NG" "INVALID_UUID_FORMAT" "pk_CLIENTが有効なUUID形式ではありません。")
+    return
+  }
+  if ([string]::IsNullOrWhiteSpace($reqToken)) {
+    Write-Output (New-MergeResponse $reqId "NG" "INVALID_REQUEST" "planTokenが指定されていません。")
+    return
+  }
+
+  # APPLY request schema validation: unexpected fields check
+  $allowedApplyKeys = @("protocolVersion", "action", "requestId", "VaultRoot", "pk_CLIENT", "companyNameRaw", "planToken")
+  foreach ($k in $Payload.Keys) {
+    if ($allowedApplyKeys -notcontains $k) {
+      Write-Output (New-MergeResponse $reqId "NG" "INVALID_REQUEST" "定義外のフィールドが含まれています: $k")
+      return
+    }
+  }
+
+  # Lock Acquisition Phase (NH-1, NM-1, NM-2)
+  $txDir = Join-Path $vaultRoot ".fm-obsidian-bridge-transactions"
+  if (-not (Test-Path -LiteralPath $txDir)) { [void][System.IO.Directory]::CreateDirectory($txDir) }
+
+  $txId = $null
+  $journalData = $null
+  $isCommitted = $false
+  $warning = $null
+  $topo = $null
+  $allManagedNotes = @()
+
+  $lock = $null
+  try {
+    $lock = [System.IO.FileStream]::new(
+      (Join-Path $txDir "ACTIVE.lock"),
+      [System.IO.FileMode]::OpenOrCreate,
+      [System.IO.FileAccess]::ReadWrite,
+      [System.IO.FileShare]::None
+    )
+  } catch {
+    $errClass = Get-LockAcquisitionErrorClass $_.Exception
+    if ($errClass -eq "CONTENTION") {
+      Write-Output (New-MergeResponse $reqId "NG" "MERGE_OPERATION_IN_PROGRESS" "他の操作が実行中です。しばらく待ってから再試行してください。")
+    } else {
+      Write-Output (New-MergeResponse $reqId "NG" "MERGE_OPERATION_FAILED" "ロックの取得に失敗しました ($errClass): $($_.Exception.Message)")
+    }
+    return
+  }
+
+  try {
+    $txId = [Guid]::NewGuid().ToString("D")
+
+    # B-5 & NH-2: Per-transaction recovery pairing with Retain-and-Classify validator
+    $inProgressFiles = @(Get-ChildItem -LiteralPath $txDir -Filter "*.inprogress.json" -File -ErrorAction SilentlyContinue)
+    $unresolvedTxFound = $false
+    $unresolvedTxDiag = $null
+    foreach ($ipFile in $inProgressFiles) {
+      $txIdMatch = [regex]::Match($ipFile.Name, "^(.+)\.inprogress\.json$")
+      if ($txIdMatch.Success) {
+        $curTxId = $txIdMatch.Groups[1].Value
+        $matchingCommitted = Join-Path $txDir "$curTxId.committed.json"
+        if (-not (Test-Path -LiteralPath $matchingCommitted)) {
+          # Check if this transaction is a valid ROLLBACK_COMPLETE terminal state (NH-2 Retain-and-Classify)
+          $matchingJournal = Join-Path $txDir "$curTxId.journal.json"
+          $isRollbackComplete = $false
+          if (Test-Path -LiteralPath $matchingJournal) {
+            try {
+              $jRaw = [System.IO.File]::ReadAllText($matchingJournal, [System.Text.Encoding]::UTF8)
+              $jObj = ConvertFrom-Json $jRaw
+              if (Test-RollbackCompleteSemanticValid $jObj $curTxId $txDir) {
+                $isRollbackComplete = $true
+              }
+            } catch {}
+          }
+
+          if (-not $isRollbackComplete) {
+            $unresolvedTxFound = $true
+            if (Test-Path -LiteralPath $matchingJournal) {
+              try {
+                $jRaw = [System.IO.File]::ReadAllText($matchingJournal, [System.Text.Encoding]::UTF8)
+                $jObj = ConvertFrom-Json $jRaw
+                if (Test-JournalStructureValid $jObj $curTxId) {
+                  $jEntries = Get-JournalEntriesArray $jObj
+                  $compCount = @($jEntries | Where-Object { (Get-JournalPropSafe $_ 'State') -eq 'COMPLETED' }).Count
+                  $pendCount = @($jEntries | Where-Object { (Get-JournalPropSafe $_ 'State') -eq 'PENDING' }).Count
+                  $rbCount = @($jEntries | Where-Object { (Get-JournalPropSafe $_ 'State') -eq 'ROLLED_BACK' }).Count
+                  $unresolvedTxDiag = "txId: $curTxId, entries: $($jEntries.Count), completed: $compCount, pending: $pendCount, rolledBack: $rbCount, rollbackStatus: $(Get-JournalPropSafe $jObj 'rollbackStatus')"
+                }
+              } catch {}
+            }
+            break
+          }
+        }
+      }
+    }
+    if ($unresolvedTxFound) {
+      $msg = if ($null -ne $unresolvedTxDiag) { "未解決のトランザクションインプログレスマーカーが存在します ($unresolvedTxDiag)。" } else { "未解決のトランザクションインプログレスマーカーが存在します。" }
+      Write-Output (New-MergeResponse $reqId "NG" "MERGE_RECOVERY_REQUIRED" $msg)
+      return
+    }
+
+    $topo = Get-CustomerMergeTopology $vaultRoot $uuid $nameRaw
+    if ($null -ne $topo.Error) {
+      Write-Output (New-MergeResponse $reqId "NG" $topo.Error $topo.Details)
+      return
+    }
+
+    $allManagedNotes = @()
+    $globalNoteTypes = New-Object System.Collections.Generic.HashSet[string]
+    $allSourceFolderNames = @()
+
+    foreach ($f in $topo.MatchedFolders) {
+      $allSourceFolderNames += $f.FolderName
+      foreach ($n in $f.ManagedNotes) {
+        if ($globalNoteTypes.Contains($n.NoteType)) {
+          Write-Output (New-MergeResponse $reqId "NG" "NOTE_TYPE_COLLISION" "複数フォルダ間で同一noteType '$($n.NoteType)' が衝突しています。")
+          return
+        }
+        [void]$globalNoteTypes.Add($n.NoteType)
+        $allManagedNotes += $n
+      }
+    }
+
+    $liveToken = New-MergePlanTokenV3 $vaultRoot $uuid $topo.CanonicalFolderName $allSourceFolderNames $allManagedNotes
+    if ($reqToken -ne $liveToken) {
+      Write-Output (New-MergeResponse $reqId "NG" "PLAN_TOKEN_MISMATCH" "フォルダ構成またはノート構成がプラン作成時から変更されています。")
+      return
+    }
+
+    $inProgressData = @{
+      txId = $txId
+      planToken = $liveToken
+      uuid = $uuid
+      canonicalFolderName = $topo.CanonicalFolderName
+      sourceFolders = $allSourceFolderNames
+      managedFiles = $allManagedNotes
+      timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    }
+    $inProgressFile = Write-TransactionEvidenceSafe $txDir $txId "inprogress" $inProgressData
+
+    $stagingInfo = New-MergeStagingOwnershipSafe $txDir $txId
+    $stagingDir = $stagingInfo.StagingDir
+    $ownerToken = $stagingInfo.OwnerToken
+
+    $journalData = [ordered]@{
+      txId = $txId
+      uuid = $uuid
+      vaultRoot = $vaultRoot
+      canonicalFolderName = $topo.CanonicalFolderName
+      ownerToken = $ownerToken
+      rollbackStatus = "NONE"
+      entries = @()
+    }
+    $journalFile = Write-JournalEvidenceSafe $txDir $txId $journalData
+    $seq = 1
+
+    # B-4 & B-3 Mutation Phase 1: source -> staging
+    foreach ($n in $allManagedNotes) {
+      $srcPath = $n.FullPath
+      $dstPath = Join-Path $stagingDir $n.FileName
+
+      # B-3: Staging conflict must enter failure/rollback path
+      if (Test-Path -LiteralPath $dstPath) {
+        throw "ステージングに同名ファイルが既に存在します: $dstPath"
+      }
+
+      $journalEntry = [ordered]@{
+        Seq = $seq++
+        OpType = "MOVE_FILE"
+        SourcePath = $srcPath
+        DestPath = $dstPath
+        ExpectedSha256 = $n.Sha256
+        ExpectedSizeBytes = $n.SizeBytes
+        OwnerToken = $null
+        State = "PENDING"
+        Timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+      }
+      $journalData.entries = @($journalData.entries) + $journalEntry
+      [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+
+      Invoke-TestCrashHook "D"
+
+      [System.IO.File]::Move($srcPath, $dstPath)
+
+      $postSha = Get-FileSha256Raw $dstPath
+      $postSize = (Get-Item -LiteralPath $dstPath).Length
+      if ($postSha -ne $n.Sha256 -or $postSize -ne $n.SizeBytes) {
+        throw "ファイル移動後のバイト検証に失敗しました: $dstPath"
+      }
+
+      Invoke-TestCrashHook "E"
+
+      $journalEntry.State = "COMPLETED"
+      [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+    }
+
+    # B-4 Mutation Phase 2
+    $targetCanonicalDir = $topo.CanonicalFolderFullPath
+    if (Test-Path -LiteralPath $targetCanonicalDir) {
+      # Case A: Move individual files to canonical
+      foreach ($n in $allManagedNotes) {
+        $stagedFile = Join-Path $stagingDir $n.FileName
+        $finalFile = Join-Path $targetCanonicalDir $n.FileName
+        if (Test-Path -LiteralPath $finalFile) {
+          throw "最終Canonicalフォルダに同名ファイルが既に存在します: $finalFile"
+        }
+        $journalEntry = [ordered]@{
+          Seq = $seq++
+          OpType = "MOVE_FILE_STAGING_TO_CANONICAL"
+          SourcePath = $stagedFile
+          DestPath = $finalFile
+          ExpectedSha256 = $n.Sha256
+          ExpectedSizeBytes = $n.SizeBytes
+          OwnerToken = $null
+          State = "PENDING"
+          Timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        }
+        $journalData.entries = @($journalData.entries) + $journalEntry
+        [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+
+        Invoke-TestCrashHook "D"
+
+        [System.IO.File]::Move($stagedFile, $finalFile)
+
+        $postSha = Get-FileSha256Raw $finalFile
+        $postSize = (Get-Item -LiteralPath $finalFile).Length
+        if ($postSha -ne $n.Sha256 -or $postSize -ne $n.SizeBytes) {
+          throw "最終Canonical移動後のバイト検証に失敗しました: $finalFile"
+        }
+
+        Invoke-TestCrashHook "E"
+
+        $journalEntry.State = "COMPLETED"
+        [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+      }
+
+      $finalOwnerMarker = Join-Path $targetCanonicalDir ".fm-obsidian-merge-owner"
+      $markerSha = Get-FileSha256Raw $stagingInfo.OwnerMarkerPath
+      $markerSize = (Get-Item -LiteralPath $stagingInfo.OwnerMarkerPath).Length
+      $journalEntryMarker = [ordered]@{
+        Seq = $seq++
+        OpType = "MOVE_OWNERSHIP_MARKER"
+        SourcePath = $stagingInfo.OwnerMarkerPath
+        DestPath = $finalOwnerMarker
+        ExpectedSha256 = $markerSha
+        ExpectedSizeBytes = $markerSize
+        OwnerToken = $ownerToken
+        State = "PENDING"
+        Timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+      }
+      $journalData.entries = @($journalData.entries) + $journalEntryMarker
+      [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+
+      Invoke-TestCrashHook "D"
+
+      [System.IO.File]::Move($stagingInfo.OwnerMarkerPath, $finalOwnerMarker)
+
+      if (-not (Test-Path -LiteralPath $finalOwnerMarker -PathType Leaf) -or (Test-Path -LiteralPath $stagingInfo.OwnerMarkerPath)) {
+        throw "所有権マーカーの移動後検証に失敗しました: $finalOwnerMarker"
+      }
+      $postMarkerSha = Get-FileSha256Raw $finalOwnerMarker
+      $postMarkerSize = (Get-Item -LiteralPath $finalOwnerMarker).Length
+      $postMarkerToken = (Get-Content -LiteralPath $finalOwnerMarker -Raw -Encoding UTF8).Trim()
+      if ($postMarkerSha -ne $markerSha -or $postMarkerSize -ne $markerSize -or $postMarkerToken -ne $ownerToken) {
+        throw "最終所有権マーカーのバイト/トークン検証に失敗しました: $finalOwnerMarker"
+      }
+
+      Invoke-TestCrashHook "E"
+
+      $journalEntryMarker.State = "COMPLETED"
+      [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+
+      # Verify staging directory is empty and transaction-owned before removal
+      $remainingStaged = @(Get-ChildItem -LiteralPath $stagingDir -Force -ErrorAction Stop)
+      if ($remainingStaged.Count -gt 0) {
+        throw "ステージングディレクトリに未処理のファイルが存在するため削除できません: $stagingDir"
+      }
+      [System.IO.Directory]::Delete($stagingDir, $false)
+    } else {
+      # Case B: Directory move
+      $finalOwnerMarker = Join-Path $targetCanonicalDir ".fm-obsidian-merge-owner"
+      $journalEntryDir = [ordered]@{
+        Seq = $seq++
+        OpType = "MOVE_DIRECTORY"
+        SourcePath = $stagingDir
+        DestPath = $targetCanonicalDir
+        ExpectedSha256 = $null
+        ExpectedSizeBytes = $null
+        OwnerToken = $ownerToken
+        State = "PENDING"
+        Timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+      }
+      $journalData.entries = @($journalData.entries) + $journalEntryDir
+      [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+
+      Invoke-TestCrashHook "D"
+
+      [System.IO.Directory]::Move($stagingDir, $targetCanonicalDir)
+
+      if (-not (Test-Path -LiteralPath $targetCanonicalDir -PathType Container) -or (Test-Path -LiteralPath $stagingDir)) {
+        throw "ディレクトリ移動後の存在検証に失敗しました: $targetCanonicalDir"
+      }
+      if (-not (Test-Path -LiteralPath $finalOwnerMarker -PathType Leaf)) {
+        throw "最終Canonicalフォルダに所有権マーカーが見つかりません: $finalOwnerMarker"
+      }
+      $readFinalToken = (Get-Content -LiteralPath $finalOwnerMarker -Raw -Encoding UTF8).Trim()
+      if ($readFinalToken -ne $ownerToken) {
+        throw "最終Canonicalフォルダの所有権トークンが不一致です。"
+      }
+
+      Invoke-TestCrashHook "E"
+
+      $journalEntryDir.State = "COMPLETED"
+      [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+    }
+
+    if (-not (Test-Path -LiteralPath $finalOwnerMarker)) {
+      throw "最終Canonicalフォルダに所有権マーカーが見つかりません: $finalOwnerMarker"
+    }
+    $readFinalToken = [System.IO.File]::ReadAllText($finalOwnerMarker, [System.Text.Encoding]::UTF8).Trim()
+    if ($readFinalToken -ne $stagingInfo.OwnerToken) {
+      throw "最終Canonicalフォルダの所有権トークンが不一致です。"
+    }
+
+    $finalTopo = Get-CustomerMergeTopology $vaultRoot $uuid $nameRaw
+    if ($finalTopo.MatchedFolders.Count -ne 1 -or $finalTopo.MatchedFolders[0].FolderName -ne $topo.CanonicalFolderName) {
+      throw "マージ後のトポロジ検証に失敗しました: フォルダが単一Canonicalに集約されていません。"
+    }
+    if ($finalTopo.MatchedFolders[0].ManagedNotes.Count -ne $allManagedNotes.Count) {
+      throw "マージ後の管理ノート総数が一致しません。"
+    }
+
+    $committedData = @{
+      txId = $txId
+      planToken = $liveToken
+      uuid = $uuid
+      canonicalFolderName = $topo.CanonicalFolderName
+      mergedNotesCount = $allManagedNotes.Count
+      committedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+    }
+    $committedFile = Write-TransactionEvidenceSafe $txDir $txId "committed" $committedData
+    $isCommitted = $true
+
+    Invoke-TestCrashHook "G"
+
+    $warning = $null
+
+    try {
+      if (Test-Path -LiteralPath $finalOwnerMarker) {
+        Remove-Item -LiteralPath $finalOwnerMarker -Force -ErrorAction Stop
+      }
+    } catch {
+      $warning = "OWNERSHIP_MARKER_CLEANUP_PENDING"
+    }
+
+    if ($null -eq $warning) {
+      try {
+        # Safe cleanup order: journal -> inprogress -> committed
+        if (Test-Path -LiteralPath $journalFile) { Remove-Item -LiteralPath $journalFile -Force -ErrorAction Stop }
+        if (Test-Path -LiteralPath $inProgressFile) { Remove-Item -LiteralPath $inProgressFile -Force -ErrorAction Stop }
+        if (Test-Path -LiteralPath $committedFile) { Remove-Item -LiteralPath $committedFile -Force -ErrorAction Stop }
+      } catch {
+        $warning = "TRANSACTION_MARKER_CLEANUP_PENDING"
+      }
+    }
+
+    $resp = New-MergeResponse $reqId "OK" "MERGE_COMPLETED" "顧客フォルダのマージに完了しました。" -extra @{
+      canonicalFolderName = $topo.CanonicalFolderName
+      mergedNotesCount = $allManagedNotes.Count
+      sourceFoldersPreserved = $allSourceFolderNames
+    }
+    if ($null -ne $warning) {
+      $resp = New-MergeResponse $reqId "OK" "MERGE_COMPLETED" "顧客フォルダのマージは完了しましたが、クリーンアップが一部遅延しました。" -warning $warning -extra @{
+        canonicalFolderName = $topo.CanonicalFolderName
+        mergedNotesCount = $allManagedNotes.Count
+      }
+    }
+    Write-Output $resp
+  } catch {
+    $committedOnDisk = -not [string]::IsNullOrWhiteSpace($txDir) -and -not [string]::IsNullOrWhiteSpace($txId) -and (Test-Path -LiteralPath (Join-Path $txDir "$txId.committed.json"))
+    if ($isCommitted -or $committedOnDisk) {
+      # POST-COMMIT INTERLOCK: Destructive rollback is permanently forbidden after commit!
+      $warnCode = if ($null -ne $warning) { $warning } else { "POST_COMMIT_CLEANUP_FAILED" }
+      $resp = New-MergeResponse $reqId "OK" "MERGE_COMPLETED" "顧客フォルダのマージは完了しましたが、事後処理中に例外が発生しました ($($_.Exception.Message))。" -warning $warnCode -extra @{
+        canonicalFolderName = if ($null -ne $topo) { $topo.CanonicalFolderName } else { $null }
+        mergedNotesCount = if ($null -ne $allManagedNotes) { $allManagedNotes.Count } else { 0 }
+      }
+      Write-Output $resp
+    } else {
+      $rbRes = Invoke-OptionBRollback $journalData $txId $txDir
+      if ($rbRes.Success) {
+        # Crash Window H: ROLLBACK_COMPLETE persisted to journal, before best-effort cleanup
+        Invoke-TestCrashHook "H"
+        Complete-RollbackEvidenceCleanup $txId $txDir $journalData
+        Write-Output (New-MergeResponse $reqId "NG" "MERGE_FAILED_ROLLED_BACK" "マージ中にエラーが発生したためロールバックしました: $($_.Exception.Message)")
+      } else {
+        Write-Output (New-MergeResponse $reqId "NG" "MERGE_ROLLBACK_FAILED" "マージ中にエラーが発生し、ロールバックも失敗しました(手動確認が必要です): $($_.Exception.Message) / $($rbRes.Details)")
+      }
+    }
+  } finally {
+    if ($null -ne $lock) {
+      $lock.Close()
+      $lock.Dispose()
+    }
+  }
+}
+
+
+function Invoke-OpenObsidianNotes($payload) {
+  $rawVault = if ($payload.ContainsKey("VaultRoot")) { [string]$payload["VaultRoot"] } else { "" }
+  $VaultRoot = $rawVault.Trim()
   if (-not (Test-Path -LiteralPath $VaultRoot)) { Out-NG "ERROR" "VaultRoot not found." }
+
+  # Lock Acquisition Phase (NH-1, NM-1, NM-2)
+  $txDir = Join-Path $VaultRoot ".fm-obsidian-bridge-transactions"
+  if (-not (Test-Path -LiteralPath $txDir)) { [void][System.IO.Directory]::CreateDirectory($txDir) }
+
+  $lock = $null
+  try {
+    $lock = [System.IO.FileStream]::new(
+      (Join-Path $txDir "ACTIVE.lock"),
+      [System.IO.FileMode]::OpenOrCreate,
+      [System.IO.FileAccess]::ReadWrite,
+      [System.IO.FileShare]::None
+    )
+  } catch {
+    $errClass = Get-LockAcquisitionErrorClass $_.Exception
+    Out-NG "ERROR" "他の操作が実行中か、ロック取得に失敗しました ($errClass)。"
+  }
+
+  try {
   Assert-ObsidianReady
 
   $custRoot  = Join-Path $VaultRoot "01_顧客"
@@ -1330,17 +2983,17 @@ try {
 
   $index = Load-IndexSafe $indexPath
 
-  $nameRaw  = [string]$payload.companyNameRaw
-  $rank     = [string]$payload.RANK
-  $ceo      = [string]$payload.CEO
-  $ruby     = [string]$payload.RUBY
-  $uuid     = [string]$payload.pk_CLIENT
+  $nameRaw  = if ($payload.ContainsKey("companyNameRaw")) { [string]$payload["companyNameRaw"] } else { "" }
+  $rank     = if ($payload.ContainsKey("RANK")) { [string]$payload["RANK"] } else { "" }
+  $ceo      = if ($payload.ContainsKey("CEO")) { [string]$payload["CEO"] } else { "" }
+  $ruby     = if ($payload.ContainsKey("RUBY")) { [string]$payload["RUBY"] } else { "" }
+  $uuid     = if ($payload.ContainsKey("pk_CLIENT")) { [string]$payload["pk_CLIENT"] } else { "" }
 
   # ---- 不正UUIDフォールバックの廃止 (2026-07-30) ----
   if (-not (Test-UciUuidFormat $uuid)) {
       Out-NG "INVALID_UUID_FORMAT" "pk_CLIENTがUUID形式ではありません。"
   }
-  $noteType = [string]$payload.noteType
+  $noteType = if ($payload.ContainsKey("noteType")) { [string]$payload["noteType"] } else { "" }
 
   # ---- 名前正規化 ----
   $n = $nameRaw.Trim()
@@ -1360,6 +3013,18 @@ try {
   # ---- v9.0.0: canonical命名の一元化 ----
   # 顧客フォルダ名・新規ノート名はここで確定したcanonical値以外を使用しない。
   $canonicalFolderName = Get-CanonicalCustomerFolderName $nameRaw $uuid
+
+  # ---- Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護 ----
+  $matchedFoldersList = @(Get-UciUuidMatchedCustomerFolders $custRoot $uuid)
+  if ($matchedFoldersList.Count -ge 2) {
+    Out-NG "UUID_FOLDER_CONFLICT" "同一のpk_CLIENT UUID ($uuid) を持つ顧客フォルダが複数存在します。マージ処理が必要です。(Count: $($matchedFoldersList.Count))"
+  }
+
+  # ---- Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護 ----
+  $matchedFoldersList = @(Get-UciUuidMatchedCustomerFolders $custRoot $uuid)
+  if ($matchedFoldersList.Count -ge 2) {
+    Out-NG "UUID_FOLDER_CONFLICT" "同一のpk_CLIENT UUID ($uuid) を持つ顧客フォルダが複数存在します。マージ処理が必要です。(Count: $($matchedFoldersList.Count))"
+  }
   $canonicalFile = "${prefixStr}_${nameNorm}$(Get-UciUuidSuffix $uuid).md"
 
   # ★ v9.0.2 (FIX-1): $targetAbs と 新規CREATE候補path を完全に分離する。
@@ -1530,14 +3195,14 @@ try {
       # サブフォルダ側に同一UUID+同一noteTypeのnoteがある場合は
       # MANAGED_NOTE_OUT_OF_SCOPE で安全停止する。
       # ================================================================
-      $outOfScopeNotes = @(Get-UciOutOfScopeManagedNotes $currentFolderFull $prefixStr $uuid)
+      $unscopedNotes = @(Get-UciOutOfScopeManagedNotes $currentFolderFull $prefixStr $uuid)
       $uciMatches = @(Get-UuidNoteTypeMatches $currentFolderFull $prefixStr $uuid)
 
       if ($uciMatches.Count -ge 2) {
           Out-NG "DUPLICATE_NOTE_TYPE" "同一UUID・同一noteTypeの既存ノートが顧客フォルダ直下に複数見つかりました。安全のため処理を中止します。(Folder: $foundFolder / noteType: $noteType / 件数: $($uciMatches.Count))"
       }
-      if ($outOfScopeNotes.Count -ge 1) {
-          Out-NG "MANAGED_NOTE_OUT_OF_SCOPE" "管理対象ノートと同一UUID・同一noteTypeのノートが顧客フォルダのサブフォルダ内に存在します。自動採用・自動作成は行わず処理を中止します。(Folder: $foundFolder / noteType: $noteType / Path: $($outOfScopeNotes[0]))"
+      if ($unscopedNotes.Count -ge 1) {
+          Out-NG "MANAGED_NOTE_OUT_OF_SCOPE" "管理対象ノートと同一UUID・同一noteTypeのノートが顧客フォルダのサブフォルダ内に存在します。自動採用・自動作成は行わず処理を中止します。(Folder: $foundFolder / noteType: $noteType / Path: $($unscopedNotes[0]))"
       }
 
       if ($uciMatches.Count -eq 1) {
@@ -1620,70 +3285,6 @@ try {
   }
 
   # ▼▼▼ COMPARE モード (突合結果を開く) ▼▼▼
-  if ($payload.MODE -eq "COMPARE") {
-    if (-not $foundFolder) {
-       Out-NG "ERROR" "比較対象の顧客フォルダが見つかりません。(Search: $nameNorm / pk_CLIENT: $uuid)"
-    }
-    # ★ v9.0.1/v9.0.2: COMPAREの突合対象も正式managed note(UUID検証済み)でなければならない。
-    # fuzzy候補・UUID未検証の同名ファイルは採用しないため、
-    # UUID検証済みの$targetAbsが無い場合はPythonへ渡さず安全停止する。
-    if ([string]::IsNullOrWhiteSpace($targetAbs) -or -not (Test-Path -LiteralPath $targetAbs -PathType Leaf)) {
-       Out-NG "MANAGED_NOTE_NOT_FOUND" "突合対象の正式ノート(UUID一致・顧客フォルダ直下)が見つかりません。(Folder: $foundFolder / noteType: $noteType / Expected: $canonicalFile)"
-    }
-
-    $compareDir = Join-Path $custRoot $foundFolder
-
-    $scriptName = "diff_checker.py"
-    if ($noteType -match "事故一覧") { $scriptName = "diff_checker_jiko.py" }
-
-    $pyScript = Join-Path $PSScriptRoot $scriptName
-    if (-not (Test-Path -LiteralPath $pyScript)) { throw "Pythonスクリプトが見つかりません: $pyScript" }
-
-    $csvPath = $payload.csvPath
-    if (-not (Test-Path -LiteralPath $csvPath)) { throw "CSVファイルが見つかりません: $csvPath" }
-
-    $logOut = Join-Path $env:TEMP "_py_out.log"
-    $logErr = Join-Path $env:TEMP "_py_err.log"
-    $python = Resolve-PythonExecutable
-    $pythonArgs = @($python.PrefixArguments) + @($pyScript, $csvPath, $targetAbs)
-
-    Write-Host "--- [COMPARE START] ---" -ForegroundColor Cyan
-    Write-Host "Script : $scriptName"
-    Write-Host "Target : $targetAbs"
-
-    Push-Location -LiteralPath $compareDir
-    try {
-      & $python.FilePath @pythonArgs 1> $logOut 2> $logErr
-      $pythonExitCode = $LASTEXITCODE
-    } finally {
-      Pop-Location
-    }
-
-    if ($pythonExitCode -ne 0) {
-      Write-Host "Log (Err): $(Get-Content $logErr -Raw -ErrorAction SilentlyContinue)" -ForegroundColor Red
-      throw "Pythonスクリプトエラー (ExitCode: $pythonExitCode)"
-    }
-
-    $resultFileName = "突合結果(契約).md"
-    if ($noteType -match "事故一覧") { $resultFileName = "突合結果(事故).md" }
-
-    $resultFilePath = Join-Path $compareDir $resultFileName
-
-    if (-not (Test-Path -LiteralPath $resultFilePath)) {
-         throw "結果ファイルが生成されませんでした: $resultFilePath"
-    }
-
-    $rel = Get-RelPath $VaultRoot $resultFilePath
-    $lw  = (Get-Item -LiteralPath $resultFilePath).LastWriteTime
-
-    # 標準URIスキームでファイルを開く
-    Open-ObsidianFile $VaultRoot $rel
-
-    # FileMaker返却用URI
-    $url = Get-ObsidianOpenUrl $VaultRoot $rel
-
-    Out-OK "OPENED" $url $rel ($lw.ToString("yyyy-MM-ddTHH:mm:ss")) "COMPARE_DONE"
-  }
   # ▲▲▲ COMPARE モード 終了 ▲▲▲
 
   # ▼▼▼ 通常モード（引数に応じて一覧ファイルを開く／なければ作成） ▼▼▼
@@ -1886,6 +3487,1040 @@ try {
   $url = Get-ObsidianOpenUrl $VaultRoot $rel
 
   Out-OK "CREATED" $url $rel ((Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")) "e30="
+  } finally {
+    if ($null -ne $lock) {
+      $lock.Close()
+      $lock.Dispose()
+    }
+  }
+}
+
+function Invoke-CheckObsidianNotes($payload) {
+  $rawVault = if ($payload.ContainsKey("VaultRoot")) { [string]$payload["VaultRoot"] } else { "" }
+  $VaultRoot = $rawVault.Trim()
+  if (-not (Test-Path -LiteralPath $VaultRoot)) { Out-NG "ERROR" "VaultRoot not found." }
+
+  # Lock Acquisition Phase (NH-1, NM-1, NM-2)
+  $txDir = Join-Path $VaultRoot ".fm-obsidian-bridge-transactions"
+  if (-not (Test-Path -LiteralPath $txDir)) { [void][System.IO.Directory]::CreateDirectory($txDir) }
+
+  $lock = $null
+  try {
+    $lock = [System.IO.FileStream]::new(
+      (Join-Path $txDir "ACTIVE.lock"),
+      [System.IO.FileMode]::OpenOrCreate,
+      [System.IO.FileAccess]::ReadWrite,
+      [System.IO.FileShare]::None
+    )
+  } catch {
+    $errClass = Get-LockAcquisitionErrorClass $_.Exception
+    Out-NG "ERROR" "他の操作が実行中か、ロック取得に失敗しました ($errClass)。"
+  }
+
+  try {
+  Assert-ObsidianReady
+
+  $custRoot  = Join-Path $VaultRoot "01_顧客"
+  $indexPath = Join-Path $VaultRoot "scripts\obsidian_index.json"
+  if (-not (Test-Path -LiteralPath $custRoot)) { New-Item -ItemType Directory -Path $custRoot -Force | Out-Null }
+
+  $index = Load-IndexSafe $indexPath
+
+  $nameRaw  = if ($payload.ContainsKey("companyNameRaw")) { [string]$payload["companyNameRaw"] } else { "" }
+  $rank     = if ($payload.ContainsKey("RANK")) { [string]$payload["RANK"] } else { "" }
+  $ceo      = if ($payload.ContainsKey("CEO")) { [string]$payload["CEO"] } else { "" }
+  $ruby     = if ($payload.ContainsKey("RUBY")) { [string]$payload["RUBY"] } else { "" }
+  $uuid     = if ($payload.ContainsKey("pk_CLIENT")) { [string]$payload["pk_CLIENT"] } else { "" }
+
+  # ---- 不正UUIDフォールバックの廃止 (2026-07-30) ----
+  if (-not (Test-UciUuidFormat $uuid)) {
+      Out-NG "INVALID_UUID_FORMAT" "pk_CLIENTがUUID形式ではありません。"
+  }
+  $noteType = if ($payload.ContainsKey("noteType")) { [string]$payload["noteType"] } else { "" }
+
+  # ---- 名前正規化 ----
+  $n = $nameRaw.Trim()
+  if ($noteType -match "一覧") {
+      $n = $n -replace "株式会社", "㈱" -replace "有限会社", "㈲"
+      $n = $n -replace "（株）", "㈱" -replace "\(株\)", "㈱"
+      $n = $n -replace "（有）", "㈲" -replace "\(有\)", "㈲"
+  } else {
+      $remove = @("株式会社","有限会社","合同会社","合名会社","合資会社","（株）","(株)","㈱","有限","（有）","(有)","㈲")
+      foreach ($r in $remove) { $n = $n -replace [regex]::Escape($r), "" }
+  }
+  $nameNorm = Sanitize-LeafName $n "NO_NAME"
+
+  # アイコンとファイル名決定
+  $prefixStr = Get-IconPrefix $noteType
+
+  # ---- v9.0.0: canonical命名の一元化 ----
+  # 顧客フォルダ名・新規ノート名はここで確定したcanonical値以外を使用しない。
+  $canonicalFolderName = Get-CanonicalCustomerFolderName $nameRaw $uuid
+
+  # ---- Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護 ----
+  $matchedFoldersList = @(Get-UciUuidMatchedCustomerFolders $custRoot $uuid)
+  if ($matchedFoldersList.Count -ge 2) {
+    Out-NG "UUID_FOLDER_CONFLICT" "同一のpk_CLIENT UUID ($uuid) を持つ顧客フォルダが複数存在します。マージ処理が必要です。(Count: $($matchedFoldersList.Count))"
+  }
+
+  # ---- Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護 ----
+  $matchedFoldersList = @(Get-UciUuidMatchedCustomerFolders $custRoot $uuid)
+  if ($matchedFoldersList.Count -ge 2) {
+    Out-NG "UUID_FOLDER_CONFLICT" "同一のpk_CLIENT UUID ($uuid) を持つ顧客フォルダが複数存在します。マージ処理が必要です。(Count: $($matchedFoldersList.Count))"
+  }
+  $canonicalFile = "${prefixStr}_${nameNorm}$(Get-UciUuidSuffix $uuid).md"
+
+  # ★ v9.0.2 (FIX-1): $targetAbs と 新規CREATE候補path を完全に分離する。
+  #   $targetAbs        ... UUID検証済みの既存managed noteだけを設定してよい変数。
+  #                         これが非nullのときのみUpdate-Yaml-Robustによる既存note更新を行う。
+  #   $newCandidateAbs  ... 新規CREATE候補path(まだ採用が確定していない予定パス)。
+  #                         実在していても既存managed noteとしては絶対に採用しない。
+  #   $fuzzyCandidates  ... UUID未検証のファイル名類似候補(診断保持のみ。出力は行わない)。
+  $targetAbs = $null
+  $newCandidateAbs = $null
+  $fuzzyCandidates = @()
+  $foundFolder = $null
+
+  # ========================================================
+  # v9.0.0 Step A: obs_RELPATH を「note locator hint」として検証・保持する。
+  # ここでは採用を確定しない(customer folder identity解決を必ず別途実行するため)。
+  # 検証内容は従来通り弱体化させない:
+  #   相対パス / ".."を含まない / 01_顧客配下 / Vault外へ出ない / 3セグメント /
+  #   実在ファイル / YAML完全UUID一致 / noteType接頭辞一致 / customer folderとして解決可能
+  # ========================================================
+  $hintNoteAbs = $null
+  $hintFolderInfo = $null
+  $hintFileName = $null
+
+  if (
+      $payload.ContainsKey("obs_RELPATH") -and
+      -not [string]::IsNullOrWhiteSpace([string]$payload.obs_RELPATH)
+  ) {
+      $storedRel = ([string]$payload.obs_RELPATH).Trim()
+      $storedRelNormalized = $storedRel.Replace("/", [string][char]92)
+
+      # 絶対パス、親ディレクトリ参照、01_顧客以外を拒否する。
+      $storedSegments = @($storedRelNormalized -split '\\')
+      $storedPathShapeValid = (
+          -not [System.IO.Path]::IsPathRooted($storedRelNormalized) -and
+          $storedRelNormalized -notmatch '(^|\\)\.\.(\\|$)' -and
+          $storedSegments.Count -eq 3 -and
+          $storedSegments[0] -eq "01_顧客" -and
+          -not [string]::IsNullOrWhiteSpace($storedSegments[1]) -and
+          -not [string]::IsNullOrWhiteSpace($storedSegments[2])
+      )
+
+      if ($storedPathShapeValid) {
+          $storedAbs = [System.IO.Path]::GetFullPath((Join-Path $VaultRoot $storedRelNormalized))
+          $custRootFull = [System.IO.Path]::GetFullPath($custRoot).TrimEnd([char]92) + [char]92
+
+          # GetFullPath後も01_顧客配下に留まることを確認する。
+          if ($storedAbs.StartsWith($custRootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+              if (Test-Path -LiteralPath $storedAbs -PathType Leaf) {
+                  $storedFile = Get-Item -LiteralPath $storedAbs
+                  $storedFolderInfo = Resolve-UciDirectChildFolder `
+                      ([System.IO.DirectoryInfo]::new($custRoot)) `
+                      $storedFile.FullName
+
+                  if ($null -ne $storedFolderInfo) {
+                      # customer folder直下のノートであること(managed note scope)を確認する。
+                      $storedIsDirectChild = [string]::Equals(
+                          (Split-Path -Parent $storedFile.FullName),
+                          $storedFolderInfo.FullName,
+                          [System.StringComparison]::OrdinalIgnoreCase
+                      )
+                      $storedHeader = Get-YamlHeaderLines $storedFile.FullName
+                      if ($null -ne $storedHeader -and $storedIsDirectChild) {
+                          $storedUuid = Get-YamlScalarValue $storedHeader "UUID:"
+                          $storedPrefixMatches = $storedFile.Name.StartsWith(
+                              "${prefixStr}_",
+                              [System.StringComparison]::Ordinal
+                          )
+
+                          if (
+                              -not [string]::IsNullOrWhiteSpace($storedUuid) -and
+                              (Test-UciUuidFormat $storedUuid) -and
+                              $storedUuid.Trim().ToUpperInvariant() -eq $uuid.Trim().ToUpperInvariant() -and
+                              $storedPrefixMatches
+                          ) {
+                              # note候補としてのみ保持する(folder identity authorityにはしない)。
+                              $hintNoteAbs = $storedFile.FullName
+                              $hintFolderInfo = $storedFolderInfo
+                              $hintFileName = $storedFile.Name
+                          }
+                      }
+                  }
+              }
+          }
+      }
+  }
+
+  # ========================================================
+  # v9.0.0 Step B: 完全UUIDによる customer folder identity discovery
+  # 01_顧客配下を再帰検索し、YAML frontmatterの完全UUID一致ノートが属する
+  # 01_顧客直下のcustomer folderを特定する。
+  # ========================================================
+  $identityInfo = Get-UciUuidMatchedCustomerFolders $custRoot $uuid
+  if ($null -ne $identityInfo.unresolved) {
+      Out-NG "ERROR" "UUID一致ノートが01_顧客直下のフォルダ構造として解決できません。(Path: $($identityInfo.unresolved))"
+  }
+  $identityFolders = @($identityInfo.folders)
+
+  if ($identityFolders.Count -ge 2) {
+      $names = ($identityFolders | ForEach-Object { $_.Name }) -join ";"
+      Out-NG "UUID_FOLDER_CONFLICT" "同一UUIDのノートが複数の顧客フォルダにまたがっています。安全のため処理を中止します。(pk_CLIENT: $uuid / Folders: $names)"
+  }
+
+  $resolvedFolderInfo = $null
+  if ($identityFolders.Count -eq 1) {
+      $resolvedFolderInfo = $identityFolders[0]
+  }
+
+  # ========================================================
+  # v9.0.0 Step C: identityで確定したフォルダのevidence評価 → canonical昇格
+  # ========================================================
+  if ($null -ne $resolvedFolderInfo) {
+      $evidence = Get-UciFolderEvidence $resolvedFolderInfo.FullName $uuid
+      switch ($evidence.state) {
+          "InvalidYaml" {
+              Out-NG "YAML_BODY_BOUNDARY_UNRESOLVED" "対象フォルダ内にYAML本文境界が判定できないノートがあります。本文喪失のおそれがあるため処理を中止しました。(Path: $($evidence.detailPath))"
+          }
+          "Conflict" {
+              Out-NG "FOLDER_UUID_MIXED" "対象フォルダ内に別UUIDのノートが混在しています。安全のため処理を中止します。(Path: $($evidence.detailPath) / UUID: $($evidence.detailValue))"
+          }
+          "InvalidUuid" {
+              Out-NG "FOLDER_UUID_INVALID" "対象フォルダ内にUUID形式が不正なノートが残存しています。安全のため処理を中止します。(Path: $($evidence.detailPath) / Value: $($evidence.detailValue))"
+          }
+          "NoEvidence" {
+              Out-NG "CANONICAL_FOLDER_NO_UUID_EVIDENCE" "対象フォルダの完全UUID証拠を再確認できませんでした。安全のため処理を中止します。(Folder: $($resolvedFolderInfo.Name) / pk_CLIENT: $uuid)"
+          }
+      }
+
+      # legacy(UUIDなし等) → canonicalへ昇格。別canonicalフォルダの新規作成は行わない。
+      if ($resolvedFolderInfo.Name -ne $canonicalFolderName) {
+          $canonicalDest = Join-Path $custRoot $canonicalFolderName
+          if (Test-Path -LiteralPath $canonicalDest) {
+              Out-NG "TARGET_FOLDER_ALREADY_EXISTS" "canonical顧客フォルダ名と同名の別フォルダが既に存在するため、昇格できません。(Current: $($resolvedFolderInfo.Name) / Canonical: $canonicalFolderName)"
+          }
+          try {
+              Rename-Item -LiteralPath $resolvedFolderInfo.FullName -NewName $canonicalFolderName -Force -ErrorAction Stop
+          } catch {
+              Out-NG "FOLDER_RENAME_FAILED" "顧客フォルダをcanonical名へ変更できませんでした: $($_.Exception.Message)"
+          }
+          $resolvedFolderInfo = Get-Item -LiteralPath (Join-Path $custRoot $canonicalFolderName)
+      }
+
+      $foundFolder = $resolvedFolderInfo.Name
+      $currentFolderFull = $resolvedFolderInfo.FullName
+
+      # ================================================================
+      # ★ v9.0.1 (MAJOR-1) / v9.0.2 (FIX-1): 正式managed noteの解決
+      #
+      # 正式既存noteとして$targetAbsに設定できるのは、次の3条件をすべて満たすファイルだけである。
+      #   (1) customer folder直下(direct-child)にあること
+      #   (2) 対象noteTypeのアイコン接頭辞と一致するファイル名であること
+      #   (3) YAML frontmatterの完全UUIDがpk_CLIENTと一致すること
+      # これらは Get-UuidNoteTypeMatches が一括で判定する(唯一のauthority)。
+      #
+      # v9.0.1では direct-child UUID一致0件のときに
+      #     $targetAbs = Join-Path $currentFolderFull $canonicalFile
+      # としていたため、canonicalFileと同名の既存ファイルが存在し、そのYAML UUIDが
+      # pk_CLIENTと一致しない(あるいはUUIDキー自体が無い)場合でも、後続の
+      #     if ($targetAbs -and (Test-Path -LiteralPath $targetAbs))
+      # へ流れて既存managed noteとして採用され、Update-Yaml-RobustでUUIDを
+      # 書き込んでしまう抜け道が残っていた。
+      #
+      # v9.0.2では direct-child UUID一致が0件の場合、$targetAbsは$nullのままとし、
+      # 新規CREATE候補pathは別変数$newCandidateAbsへ格納する。
+      # $newCandidateAbsが実在する場合でも既存managed noteとしては採用せず、
+      # 後段のCREATE直前チェックでTARGET_NOTE_FILENAME_CONFLICTとしてFail-closedする。
+      #
+      # サブフォルダ側に同一UUID+同一noteTypeのnoteがある場合は
+      # MANAGED_NOTE_OUT_OF_SCOPE で安全停止する。
+      # ================================================================
+      $unscopedNotes = @(Get-UciOutOfScopeManagedNotes $currentFolderFull $prefixStr $uuid)
+      $uciMatches = @(Get-UuidNoteTypeMatches $currentFolderFull $prefixStr $uuid)
+
+      if ($uciMatches.Count -ge 2) {
+          Out-NG "DUPLICATE_NOTE_TYPE" "同一UUID・同一noteTypeの既存ノートが顧客フォルダ直下に複数見つかりました。安全のため処理を中止します。(Folder: $foundFolder / noteType: $noteType / 件数: $($uciMatches.Count))"
+      }
+      if ($unscopedNotes.Count -ge 1) {
+          Out-NG "MANAGED_NOTE_OUT_OF_SCOPE" "管理対象ノートと同一UUID・同一noteTypeのノートが顧客フォルダのサブフォルダ内に存在します。自動採用・自動作成は行わず処理を中止します。(Folder: $foundFolder / noteType: $noteType / Path: $($unscopedNotes[0]))"
+      }
+
+      if ($uciMatches.Count -eq 1) {
+          # 正式managed note(direct-child + noteType一致 + 完全UUID一致)のみ採用する。
+          $targetAbs = $uciMatches[0]
+          $canonicalFile = Split-Path -Leaf $targetAbs
+      } else {
+          # ---- direct-child UUID一致 0件 ----
+          # ★ v9.0.2 (FIX-1): $targetAbsは$nullのまま維持する(既存note採用は行わない)。
+          # 新規CREATE候補pathのみを別変数へ保持する。
+          # ★ v9.0.2 (FIX-2): fuzzy候補は内部変数へ保持するだけで、Write-Host等の
+          #   追加診断出力は一切行わない(FileMaker応答契約へ新規出力を混在させない)。
+          $fuzzyCandidates = @(Get-UciFuzzyNameCandidates $currentFolderFull $prefixStr)
+          $newCandidateAbs = Join-Path $currentFolderFull $canonicalFile
+      }
+
+      # ---- v9.0.0: obs_RELPATH候補を最終フォルダ上で再検証して採用 ----
+      # hintのフォルダとidentity確定フォルダが矛盾する場合はFail-closed。
+      if ($null -ne $hintNoteAbs) {
+          $hintFinalAbs = Join-Path $currentFolderFull $hintFileName
+          $hintFolderConsistent = $false
+          if ($null -ne $hintFolderInfo) {
+              # 昇格Rename後は元パスが存在しないため、Rename前のフォルダ名/昇格後の名前いずれかと一致すればよい。
+              if ([string]::Equals($hintFolderInfo.FullName, $currentFolderFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+                  $hintFolderConsistent = $true
+              } elseif (-not (Test-Path -LiteralPath $hintFolderInfo.FullName)) {
+                  # 元フォルダが消えている = canonicalへRenameされた可能性。最終フォルダ上での実在で確認する。
+                  if (Test-Path -LiteralPath $hintFinalAbs -PathType Leaf) { $hintFolderConsistent = $true }
+              }
+          }
+          if (-not $hintFolderConsistent) {
+              Out-NG "RELPATH_FOLDER_MISMATCH" "obs_RELPATHが示す顧客フォルダと、完全UUIDで確定した顧客フォルダが一致しません。安全のため処理を中止します。(Hint: $($hintFolderInfo.Name) / Resolved: $foundFolder)"
+          }
+          if (Test-Path -LiteralPath $hintFinalAbs -PathType Leaf) {
+              $hintHdrFinal = Get-YamlHeaderLines $hintFinalAbs
+              if ($null -ne $hintHdrFinal) {
+                  $hintUuidFinal = Get-YamlScalarValue $hintHdrFinal "UUID:"
+                  if (
+                      -not [string]::IsNullOrWhiteSpace($hintUuidFinal) -and
+                      (Test-UciUuidFormat $hintUuidFinal) -and
+                      $hintUuidFinal.Trim().ToUpperInvariant() -eq $uuid.Trim().ToUpperInvariant() -and
+                      $hintFileName.StartsWith("${prefixStr}_", [System.StringComparison]::Ordinal)
+                  ) {
+                      # hintも「direct-child + noteType一致 + 完全UUID一致」を満たす場合のみ採用する。
+                      # (UUID検証済みであるため$targetAbsへの設定は正式ルールに適合する)
+                      $targetAbs = $hintFinalAbs
+                      $canonicalFile = $hintFileName
+                      $newCandidateAbs = $null
+                  }
+              }
+          }
+      }
+
+      # folderNameConfirmedはgo-aheadに過ぎない。canonical folderを別名へ降格しない。
+      # 既にcanonical名へ昇格済みのため、ここでのRenameは行わない。
+  } else {
+      # identity未確定(完全UUID証拠なし)。
+      # obs_RELPATHでnoteが見つかっていた場合でも、identityが確定しないままの採用は行わない。
+      if ($null -ne $hintNoteAbs) {
+          Out-NG "RELPATH_FOLDER_MISMATCH" "obs_RELPATHのノートは見つかりましたが、完全UUIDによる顧客フォルダ確定ができませんでした。安全のため処理を中止します。(Hint: $hintNoteAbs / pk_CLIENT: $uuid)"
+      }
+
+      # legacy顧客名一致フォルダの状態を確認する(自動作成の前に必ず判定する)。
+      $folders = Get-ChildItem -LiteralPath $custRoot -Directory -ErrorAction SilentlyContinue
+      $matchName = Normalize-ForMatch $nameRaw
+      $legacyCandidates = @($folders | Where-Object {
+          $_.Name -ne $canonicalFolderName -and (Normalize-ForMatch $_.Name) -eq $matchName
+      })
+      if ($legacyCandidates.Count -ge 1) {
+          # 完全UUID証拠が無いlegacyフォルダ。別canonicalフォルダを勝手に作らずFail-closed。
+          $legacyNames = ($legacyCandidates | ForEach-Object { $_.Name }) -join ";"
+          Out-NG "LEGACY_FOLDER_NEEDS_MIGRATION" "顧客名が一致するフォルダが存在しますが、pk_CLIENTの完全UUID証拠がないため同一顧客と確定できません。手動確認が必要です。(Folders: $legacyNames / pk_CLIENT: $uuid)"
+      }
+
+      # canonical名フォルダが既に存在するのに完全UUID証拠が無い場合(UUID8衝突等)も自動採用しない。
+      $canonicalExisting = @($folders | Where-Object { $_.Name -eq $canonicalFolderName })
+      if ($canonicalExisting.Count -ge 1) {
+          Out-NG "CANONICAL_FOLDER_NO_UUID_EVIDENCE" "canonical名の顧客フォルダは存在しますが、pk_CLIENTの完全UUID証拠がありません。UUID先頭8文字の衝突の可能性があるため処理を中止します。(Folder: $canonicalFolderName / pk_CLIENT: $uuid)"
+      }
+  }
+
+  # ▼▼▼ COMPARE モード (突合結果を開く) ▼▼▼
+  # ▲▲▲ COMPARE モード 終了 ▲▲▲
+
+  # ▼▼▼ 通常モード（引数に応じて一覧ファイルを開く／なければ作成） ▼▼▼
+
+  # 1. 既存ノートあり（開いて終わる）
+  # ★ v9.0.2 (FIX-1): ここへ到達する$targetAbsは、必ず
+  #   「direct-child + noteType接頭辞一致 + 完全UUID一致」でUUID検証済みのファイルのみである。
+  #   UUID未検証のcanonicalFile同名ファイルやfuzzy候補は$targetAbsへ入らないため、
+  #   それらへUpdate-Yaml-Robustが実行されることはない。
+  if ($targetAbs -and (Test-Path -LiteralPath $targetAbs)) {
+    $totalVal = $null
+    if ($noteType -eq "契約一覧") {
+        $totalVal = Extract-TableTotal $targetAbs
+        if ([string]::IsNullOrWhiteSpace($totalVal)) { $totalVal = "" }
+    }
+
+    Update-Yaml-Robust $targetAbs $rank $nameRaw $ceo $ruby $uuid $totalVal
+
+    $rel = Get-RelPath $VaultRoot $targetAbs
+    $lw  = (Get-Item -LiteralPath $targetAbs).LastWriteTime
+
+    $index[$payload.pk_CLIENT] = @{ relpath=$rel; lastWrite=$lw.ToString("yyyy-MM-ddTHH:mm:ss"); noteType=[string]$payload.noteType; nameNorm=$nameNorm; folderName=$foundFolder }
+    [System.IO.File]::WriteAllText($indexPath, ($index | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+
+    # 標準URIスキームでファイルを開く
+    Open-ObsidianFile $VaultRoot $rel
+
+    # FileMaker返却用URI
+    $url = Get-ObsidianOpenUrl $VaultRoot $rel
+
+    Out-OK "OPENED" $url $rel ($lw.ToString("yyyy-MM-ddTHH:mm:ss")) "e30="
+  }
+
+  # ---- v9.0.0/v9.0.1/v9.0.2: 新規作成へ入る前の最終防衛線 ----
+  # customer folderが確定している場合は、その直下のみを主判定にして再確認する
+  # (再帰検索の結果で正式ノートを自動採用してはならない)。
+  # customer folderが未確定の場合は、01_顧客配下全体でscope外/他フォルダのノートを検出し、
+  # 誤った新規作成を防ぐ。
+  if ($null -ne $resolvedFolderInfo) {
+    $finalDirect = @(Get-UuidNoteTypeMatches $resolvedFolderInfo.FullName $prefixStr $uuid)
+    if ($finalDirect.Count -ge 2) {
+      Out-NG "DUPLICATE_NOTE_TYPE" "同一UUID・同一noteTypeの既存ノートが顧客フォルダ直下に複数見つかりました。安全のため新規作成を中止します。(pk_CLIENT: $uuid / noteType: $noteType / 件数: $($finalDirect.Count))"
+    }
+    $finalOutOfScope = @(Get-UciOutOfScopeManagedNotes $resolvedFolderInfo.FullName $prefixStr $uuid)
+    if ($finalOutOfScope.Count -ge 1) {
+      Out-NG "MANAGED_NOTE_OUT_OF_SCOPE" "管理対象ノートと同一UUID・同一noteTypeのノートがサブフォルダ内に存在します。新規作成を中止します。(pk_CLIENT: $uuid / noteType: $noteType / Path: $($finalOutOfScope[0]))"
+    }
+    if ($finalDirect.Count -eq 1) {
+      # 既存採用専用分岐: 内容・YAML・ファイル名・LastWriteTimeを一切変更しない。
+      # (ここへ到達するのはUUID検証済みのdirect-child noteのみ)
+      $adoptedAbs = [string]$finalDirect[0]
+      $rel = Get-RelPath $VaultRoot $adoptedAbs
+      $lw  = (Get-Item -LiteralPath $adoptedAbs).LastWriteTime
+      $index[$payload.pk_CLIENT] = @{ relpath=$rel; lastWrite=$lw.ToString("yyyy-MM-ddTHH:mm:ss"); noteType=[string]$payload.noteType; nameNorm=$nameNorm; folderName=$resolvedFolderInfo.Name }
+      [System.IO.File]::WriteAllText($indexPath, ($index | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+      Open-ObsidianFile $VaultRoot $rel
+      $url = Get-ObsidianOpenUrl $VaultRoot $rel
+      Out-OK "OPENED" $url $rel ($lw.ToString("yyyy-MM-ddTHH:mm:ss")) "e30="
+    }
+  } else {
+    $treeMatches = @(Get-UuidNoteTypeMatchesInTree $custRoot $prefixStr $uuid)
+    if ($treeMatches.Count -ge 1) {
+      Out-NG "UUID_FOLDER_CONFLICT" "顧客フォルダを確定できないまま、同一UUID・同一noteTypeの既存ノートが検出されました。安全のため新規作成を中止します。(pk_CLIENT: $uuid / noteType: $noteType / Path: $($treeMatches[0]))"
+    }
+  }
+
+  # 新規作成時のファイル名は必ずUUID識別子付きcanonical名にする。
+  $canonicalFile = "${prefixStr}_${nameNorm}$(Get-UciUuidSuffix $uuid).md"
+
+  # 2. フォルダ未確定時の確認
+  # ※ suggestは必ずcanonicalFolderName。folderNameConfirmedは「新規作成継続のgo-ahead」としてのみ扱う。
+  #
+  # ★ v9.0.3 (folderNameConfirmed契約不整合の修正):
+  #   従来は「folderNameConfirmedが非空ならgo-ahead」としており、FileMaker側の
+  #   $$obsFolderNameInput(編集可能フィールド)でオペレータがcanonical名以外
+  #   (例: 部分一致で候補表示されたlegacyフォルダ名)を確定しても、その値を黙って捨てて
+  #   canonical名で新規作成していた。これは「オペレータの選択を無言で無視する」挙動であり安全でない。
+  #   本版では、folderNameConfirmedを引き続きnaming authorityにはしない(値からフォルダ名を作らない)が、
+  #   go-aheadとして受け入れる前に、既存Sanitize-LeafNameを通した値がcanonicalFolderNameと
+  #   OrdinalIgnoreCaseで一致することを必須化する。
+  #   不一致の場合はFOLDER_CONFIRMATION_MISMATCHでFail-closedし、
+  #   確認された名前のフォルダを既存採用しない・そこへ移動しない・canonicalフォルダも作らない・
+  #   ノートも作らない(何も作成・変更せずに停止する)。
+  $folderNameConfirmedRaw = ""
+  $hasGoAhead = $false
+  if (
+      $payload.ContainsKey("folderNameConfirmed") -and
+      -not [string]::IsNullOrWhiteSpace([string]$payload.folderNameConfirmed)
+  ) {
+    $folderNameConfirmedRaw = [string]$payload.folderNameConfirmed
+    # 既存のSanitize-LeafNameのみを使用する(新しいSanitize関数は追加しない)。
+    # 前後空白・全角空白・制御文字・禁止文字等は既存規則で正規化されるため、
+    # T27のような入力揺れはcanonicalと一致すれば正常継続できる。
+    $confirmedSafeName = Sanitize-LeafName $folderNameConfirmedRaw "NO_NAME"
+    if (-not [string]::Equals(
+            $confirmedSafeName,
+            $canonicalFolderName,
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+      Out-NG "FOLDER_CONFIRMATION_MISMATCH" "FileMakerで確認されたフォルダ名がcanonicalFolderNameと一致しないため、新規作成を中止しました。(Confirmed: $confirmedSafeName / Canonical: $canonicalFolderName)"
+    }
+    $hasGoAhead = $true
+  }
+
+  if ((-not $foundFolder) -and (-not $hasGoAhead)) {
+    $folders = Get-ChildItem -LiteralPath $custRoot -Directory -ErrorAction SilentlyContinue
+    $suggest = $canonicalFolderName
+    $cands = $folders | Where-Object { (Normalize-ForMatch $_.Name) -like "*$nameNorm*" } | Select-Object -ExpandProperty Name
+    Out-OKNeedFolder $cands $suggest $nameNorm $canonicalFile
+  }
+
+  # 3. 新規作成（フォルダ作成含む）
+  # 作成先フォルダ名はcanonicalFolderName以外を認めない。
+  if ($foundFolder) {
+    $newDir = Join-Path $custRoot $foundFolder
+    $actualCreateFolderName = $foundFolder
+  } else {
+    $actualCreateFolderName = $canonicalFolderName
+    $newDir = Join-Path $custRoot $canonicalFolderName
+  }
+
+  # fail-closed再確認: 作成先フォルダ名がcanonical名(または既にUUID証拠で確定したcanonical昇格済み名)であること。
+  if ($actualCreateFolderName -ne $canonicalFolderName) {
+    Out-NG "CANONICAL_FOLDER_NAME_MISMATCH" "作成先フォルダ名がcanonical名と一致しません。安全のため処理を中止します。(Actual: $actualCreateFolderName / Canonical: $canonicalFolderName)"
+  }
+
+  if (-not (Test-Path -LiteralPath $newDir)) {
+    [void][System.IO.Directory]::CreateDirectory($newDir)
+  }
+  $newDirInfo = Get-Item -LiteralPath $newDir
+  $newDir = $newDirInfo.FullName
+  $safeConfName = $newDirInfo.Name
+
+  # ★ v9.0.2 (FIX-1): 新規CREATE候補pathを最終確定する。
+  # 既に$newCandidateAbs(identity確定フォルダ上での候補path)がある場合はそれを優先し、
+  # 無い場合(identity未確定→新規フォルダ作成経路)はここで組み立てる。
+  # いずれの場合も、このpathに実在ファイルがあるときは既存managed noteとして採用せず、
+  # TARGET_NOTE_FILENAME_CONFLICTでFail-closedする(既存ファイルへのUUID書込みによる
+  # 「正規化」は絶対に行わない)。
+  $newAbs = Join-Path $newDir $canonicalFile
+  if ($null -ne $newCandidateAbs) {
+    if (-not [string]::Equals($newCandidateAbs, $newAbs, [System.StringComparison]::OrdinalIgnoreCase)) {
+      # identity確定フォルダとCREATE先フォルダが食い違う異常系。安全のため停止する。
+      Out-NG "CANONICAL_FOLDER_NAME_MISMATCH" "新規作成候補パスが顧客フォルダ確定結果と一致しません。安全のため処理を中止します。(Candidate: $newCandidateAbs / Create: $newAbs)"
+    }
+  }
+  if (Test-Path -LiteralPath $newAbs) {
+    $fuzzyDetail = ""
+    if ($fuzzyCandidates.Count -ge 1) { $fuzzyDetail = " / UUID未検証の同種ファイル名候補: " + (($fuzzyCandidates | Select-Object -First 5) -join ";") }
+    Out-NG "TARGET_NOTE_FILENAME_CONFLICT" "作成予定のノートと同名のファイルが既に存在しますが、YAMLの完全UUIDがpk_CLIENTと一致しないため既存ノートとして採用できません。上書き・自動正規化は行わず処理を中止します。(Path: $newAbs / pk_CLIENT: $uuid / noteType: $noteType$fuzzyDetail)"
+  }
+  try {
+    $fsNew = [System.IO.File]::Open(
+        $newAbs,
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None
+    )
+    $fsNew.Close()
+    $fsNew.Dispose()
+  } catch {
+    Out-NG "NOTE_CREATE_FAILED" "ノートの新規作成に失敗しました(既存ファイルとの競合の可能性): $($_.Exception.Message)"
+  }
+
+  $totalVal = $null
+  if ($noteType -eq "契約一覧") { $totalVal = "" }
+
+  Update-Yaml-Robust $newAbs $rank $nameRaw $ceo $ruby $uuid $totalVal
+
+  # 新規作成時のテンプレート挿入処理
+  if ($noteType -match "事故一覧") {
+      $jikoTemplate = @"
+
+---
+## 🚨対応中
+
+| 事故日 | 状態 | 証券番号 | ClaimNo | お問合せNo | 事故内容 |
+| --- | --- | --- | --- | --- | --- |
+| | | | | | |
+
+## ✅完了
+
+| 事故日 | 状態 | 証券番号 | ClaimNo | お問合せNo | 事故内容 |
+| --- | --- | --- | --- | --- | --- |
+| | | | | | |
+"@
+      [System.IO.File]::AppendAllText($newAbs, $jikoTemplate, [System.Text.UTF8Encoding]::new($false))
+  } else {
+      [System.IO.File]::AppendAllText($newAbs, "`n---`n## 履歴`nここから入力", [System.Text.UTF8Encoding]::new($false))
+  }
+
+  $rel = Get-RelPath $VaultRoot $newAbs
+
+  $index[$payload.pk_CLIENT] = @{ relpath=$rel; lastWrite=(Get-Date).ToString("yyyy-MM-ddTHH:mm:ss"); noteType=[string]$payload.noteType; nameNorm=$nameNorm; folderName=$safeConfName }
+  [System.IO.File]::WriteAllText($indexPath, ($index | ConvertTo-Json -Depth 10), [System.Text.UTF8Encoding]::new($false))
+
+  # 標準URIスキームでファイルを開く
+  Open-ObsidianFile $VaultRoot $rel
+
+  # FileMaker返却用URI
+  $url = Get-ObsidianOpenUrl $VaultRoot $rel
+
+  Out-OK "CREATED" $url $rel ((Get-Date).ToString("yyyy-MM-ddTHH:mm:ss")) "e30="
+  } finally {
+    if ($null -ne $lock) {
+      $lock.Close()
+      $lock.Dispose()
+    }
+  }
+}
+
+function Invoke-CompareObsidianNotes($payload) {
+  $rawVault = if ($payload.ContainsKey("VaultRoot")) { [string]$payload["VaultRoot"] } else { "" }
+  $VaultRoot = $rawVault.Trim()
+  if (-not (Test-Path -LiteralPath $VaultRoot)) { Out-NG "ERROR" "VaultRoot not found." }
+
+  # Lock Acquisition Phase (NH-1, NM-1, NM-2)
+  $txDir = Join-Path $VaultRoot ".fm-obsidian-bridge-transactions"
+  if (-not (Test-Path -LiteralPath $txDir)) { [void][System.IO.Directory]::CreateDirectory($txDir) }
+
+  $lock = $null
+  try {
+    $lock = [System.IO.FileStream]::new(
+      (Join-Path $txDir "ACTIVE.lock"),
+      [System.IO.FileMode]::OpenOrCreate,
+      [System.IO.FileAccess]::ReadWrite,
+      [System.IO.FileShare]::None
+    )
+  } catch {
+    $errClass = Get-LockAcquisitionErrorClass $_.Exception
+    Out-NG "ERROR" "他の操作が実行中か、ロック取得に失敗しました ($errClass)。"
+  }
+
+  try {
+  Assert-ObsidianReady
+
+  $custRoot  = Join-Path $VaultRoot "01_顧客"
+  $indexPath = Join-Path $VaultRoot "scripts\obsidian_index.json"
+  if (-not (Test-Path -LiteralPath $custRoot)) { New-Item -ItemType Directory -Path $custRoot -Force | Out-Null }
+
+  $index = Load-IndexSafe $indexPath
+
+  $nameRaw  = if ($payload.ContainsKey("companyNameRaw")) { [string]$payload["companyNameRaw"] } else { "" }
+  $rank     = if ($payload.ContainsKey("RANK")) { [string]$payload["RANK"] } else { "" }
+  $ceo      = if ($payload.ContainsKey("CEO")) { [string]$payload["CEO"] } else { "" }
+  $ruby     = if ($payload.ContainsKey("RUBY")) { [string]$payload["RUBY"] } else { "" }
+  $uuid     = if ($payload.ContainsKey("pk_CLIENT")) { [string]$payload["pk_CLIENT"] } else { "" }
+
+  # ---- 不正UUIDフォールバックの廃止 (2026-07-30) ----
+  if (-not (Test-UciUuidFormat $uuid)) {
+      Out-NG "INVALID_UUID_FORMAT" "pk_CLIENTがUUID形式ではありません。"
+  }
+  $noteType = if ($payload.ContainsKey("noteType")) { [string]$payload["noteType"] } else { "" }
+
+  # ---- 名前正規化 ----
+  $n = $nameRaw.Trim()
+  if ($noteType -match "一覧") {
+      $n = $n -replace "株式会社", "㈱" -replace "有限会社", "㈲"
+      $n = $n -replace "（株）", "㈱" -replace "\(株\)", "㈱"
+      $n = $n -replace "（有）", "㈲" -replace "\(有\)", "㈲"
+  } else {
+      $remove = @("株式会社","有限会社","合同会社","合名会社","合資会社","（株）","(株)","㈱","有限","（有）","(有)","㈲")
+      foreach ($r in $remove) { $n = $n -replace [regex]::Escape($r), "" }
+  }
+  $nameNorm = Sanitize-LeafName $n "NO_NAME"
+
+  # アイコンとファイル名決定
+  $prefixStr = Get-IconPrefix $noteType
+
+  # ---- v9.0.0: canonical命名の一元化 ----
+  # 顧客フォルダ名・新規ノート名はここで確定したcanonical値以外を使用しない。
+  $canonicalFolderName = Get-CanonicalCustomerFolderName $nameRaw $uuid
+
+  # ---- Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護 ----
+  $matchedFoldersList = @(Get-UciUuidMatchedCustomerFolders $custRoot $uuid)
+  if ($matchedFoldersList.Count -ge 2) {
+    Out-NG "UUID_FOLDER_CONFLICT" "同一のpk_CLIENT UUID ($uuid) を持つ顧客フォルダが複数存在します。マージ処理が必要です。(Count: $($matchedFoldersList.Count))"
+  }
+
+  # ---- Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護 ----
+  $matchedFoldersList = @(Get-UciUuidMatchedCustomerFolders $custRoot $uuid)
+  if ($matchedFoldersList.Count -ge 2) {
+    Out-NG "UUID_FOLDER_CONFLICT" "同一のpk_CLIENT UUID ($uuid) を持つ顧客フォルダが複数存在します。マージ処理が必要です。(Count: $($matchedFoldersList.Count))"
+  }
+  $canonicalFile = "${prefixStr}_${nameNorm}$(Get-UciUuidSuffix $uuid).md"
+
+  # ★ v9.0.2 (FIX-1): $targetAbs と 新規CREATE候補path を完全に分離する。
+  #   $targetAbs        ... UUID検証済みの既存managed noteだけを設定してよい変数。
+  #                         これが非nullのときのみUpdate-Yaml-Robustによる既存note更新を行う。
+  #   $newCandidateAbs  ... 新規CREATE候補path(まだ採用が確定していない予定パス)。
+  #                         実在していても既存managed noteとしては絶対に採用しない。
+  #   $fuzzyCandidates  ... UUID未検証のファイル名類似候補(診断保持のみ。出力は行わない)。
+  $targetAbs = $null
+  $newCandidateAbs = $null
+  $fuzzyCandidates = @()
+  $foundFolder = $null
+
+  # ========================================================
+  # v9.0.0 Step A: obs_RELPATH を「note locator hint」として検証・保持する。
+  # ここでは採用を確定しない(customer folder identity解決を必ず別途実行するため)。
+  # 検証内容は従来通り弱体化させない:
+  #   相対パス / ".."を含まない / 01_顧客配下 / Vault外へ出ない / 3セグメント /
+  #   実在ファイル / YAML完全UUID一致 / noteType接頭辞一致 / customer folderとして解決可能
+  # ========================================================
+  $hintNoteAbs = $null
+  $hintFolderInfo = $null
+  $hintFileName = $null
+
+  if (
+      $payload.ContainsKey("obs_RELPATH") -and
+      -not [string]::IsNullOrWhiteSpace([string]$payload.obs_RELPATH)
+  ) {
+      $storedRel = ([string]$payload.obs_RELPATH).Trim()
+      $storedRelNormalized = $storedRel.Replace("/", [string][char]92)
+
+      # 絶対パス、親ディレクトリ参照、01_顧客以外を拒否する。
+      $storedSegments = @($storedRelNormalized -split '\\')
+      $storedPathShapeValid = (
+          -not [System.IO.Path]::IsPathRooted($storedRelNormalized) -and
+          $storedRelNormalized -notmatch '(^|\\)\.\.(\\|$)' -and
+          $storedSegments.Count -eq 3 -and
+          $storedSegments[0] -eq "01_顧客" -and
+          -not [string]::IsNullOrWhiteSpace($storedSegments[1]) -and
+          -not [string]::IsNullOrWhiteSpace($storedSegments[2])
+      )
+
+      if ($storedPathShapeValid) {
+          $storedAbs = [System.IO.Path]::GetFullPath((Join-Path $VaultRoot $storedRelNormalized))
+          $custRootFull = [System.IO.Path]::GetFullPath($custRoot).TrimEnd([char]92) + [char]92
+
+          # GetFullPath後も01_顧客配下に留まることを確認する。
+          if ($storedAbs.StartsWith($custRootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+              if (Test-Path -LiteralPath $storedAbs -PathType Leaf) {
+                  $storedFile = Get-Item -LiteralPath $storedAbs
+                  $storedFolderInfo = Resolve-UciDirectChildFolder `
+                      ([System.IO.DirectoryInfo]::new($custRoot)) `
+                      $storedFile.FullName
+
+                  if ($null -ne $storedFolderInfo) {
+                      # customer folder直下のノートであること(managed note scope)を確認する。
+                      $storedIsDirectChild = [string]::Equals(
+                          (Split-Path -Parent $storedFile.FullName),
+                          $storedFolderInfo.FullName,
+                          [System.StringComparison]::OrdinalIgnoreCase
+                      )
+                      $storedHeader = Get-YamlHeaderLines $storedFile.FullName
+                      if ($null -ne $storedHeader -and $storedIsDirectChild) {
+                          $storedUuid = Get-YamlScalarValue $storedHeader "UUID:"
+                          $storedPrefixMatches = $storedFile.Name.StartsWith(
+                              "${prefixStr}_",
+                              [System.StringComparison]::Ordinal
+                          )
+
+                          if (
+                              -not [string]::IsNullOrWhiteSpace($storedUuid) -and
+                              (Test-UciUuidFormat $storedUuid) -and
+                              $storedUuid.Trim().ToUpperInvariant() -eq $uuid.Trim().ToUpperInvariant() -and
+                              $storedPrefixMatches
+                          ) {
+                              # note候補としてのみ保持する(folder identity authorityにはしない)。
+                              $hintNoteAbs = $storedFile.FullName
+                              $hintFolderInfo = $storedFolderInfo
+                              $hintFileName = $storedFile.Name
+                          }
+                      }
+                  }
+              }
+          }
+      }
+  }
+
+  # ========================================================
+  # v9.0.0 Step B: 完全UUIDによる customer folder identity discovery
+  # 01_顧客配下を再帰検索し、YAML frontmatterの完全UUID一致ノートが属する
+  # 01_顧客直下のcustomer folderを特定する。
+  # ========================================================
+  $identityInfo = Get-UciUuidMatchedCustomerFolders $custRoot $uuid
+  if ($null -ne $identityInfo.unresolved) {
+      Out-NG "ERROR" "UUID一致ノートが01_顧客直下のフォルダ構造として解決できません。(Path: $($identityInfo.unresolved))"
+  }
+  $identityFolders = @($identityInfo.folders)
+
+  if ($identityFolders.Count -ge 2) {
+      $names = ($identityFolders | ForEach-Object { $_.Name }) -join ";"
+      Out-NG "UUID_FOLDER_CONFLICT" "同一UUIDのノートが複数の顧客フォルダにまたがっています。安全のため処理を中止します。(pk_CLIENT: $uuid / Folders: $names)"
+  }
+
+  $resolvedFolderInfo = $null
+  if ($identityFolders.Count -eq 1) {
+      $resolvedFolderInfo = $identityFolders[0]
+  }
+
+  # ========================================================
+  # v9.0.0 Step C: identityで確定したフォルダのevidence評価 → canonical昇格
+  # ========================================================
+  if ($null -ne $resolvedFolderInfo) {
+      $evidence = Get-UciFolderEvidence $resolvedFolderInfo.FullName $uuid
+      switch ($evidence.state) {
+          "InvalidYaml" {
+              Out-NG "YAML_BODY_BOUNDARY_UNRESOLVED" "対象フォルダ内にYAML本文境界が判定できないノートがあります。本文喪失のおそれがあるため処理を中止しました。(Path: $($evidence.detailPath))"
+          }
+          "Conflict" {
+              Out-NG "FOLDER_UUID_MIXED" "対象フォルダ内に別UUIDのノートが混在しています。安全のため処理を中止します。(Path: $($evidence.detailPath) / UUID: $($evidence.detailValue))"
+          }
+          "InvalidUuid" {
+              Out-NG "FOLDER_UUID_INVALID" "対象フォルダ内にUUID形式が不正なノートが残存しています。安全のため処理を中止します。(Path: $($evidence.detailPath) / Value: $($evidence.detailValue))"
+          }
+          "NoEvidence" {
+              Out-NG "CANONICAL_FOLDER_NO_UUID_EVIDENCE" "対象フォルダの完全UUID証拠を再確認できませんでした。安全のため処理を中止します。(Folder: $($resolvedFolderInfo.Name) / pk_CLIENT: $uuid)"
+          }
+      }
+
+      # legacy(UUIDなし等) → canonicalへ昇格。別canonicalフォルダの新規作成は行わない。
+      if ($resolvedFolderInfo.Name -ne $canonicalFolderName) {
+          $canonicalDest = Join-Path $custRoot $canonicalFolderName
+          if (Test-Path -LiteralPath $canonicalDest) {
+              Out-NG "TARGET_FOLDER_ALREADY_EXISTS" "canonical顧客フォルダ名と同名の別フォルダが既に存在するため、昇格できません。(Current: $($resolvedFolderInfo.Name) / Canonical: $canonicalFolderName)"
+          }
+          try {
+              Rename-Item -LiteralPath $resolvedFolderInfo.FullName -NewName $canonicalFolderName -Force -ErrorAction Stop
+          } catch {
+              Out-NG "FOLDER_RENAME_FAILED" "顧客フォルダをcanonical名へ変更できませんでした: $($_.Exception.Message)"
+          }
+          $resolvedFolderInfo = Get-Item -LiteralPath (Join-Path $custRoot $canonicalFolderName)
+      }
+
+      $foundFolder = $resolvedFolderInfo.Name
+      $currentFolderFull = $resolvedFolderInfo.FullName
+
+      # ================================================================
+      # ★ v9.0.1 (MAJOR-1) / v9.0.2 (FIX-1): 正式managed noteの解決
+      #
+      # 正式既存noteとして$targetAbsに設定できるのは、次の3条件をすべて満たすファイルだけである。
+      #   (1) customer folder直下(direct-child)にあること
+      #   (2) 対象noteTypeのアイコン接頭辞と一致するファイル名であること
+      #   (3) YAML frontmatterの完全UUIDがpk_CLIENTと一致すること
+      # これらは Get-UuidNoteTypeMatches が一括で判定する(唯一のauthority)。
+      #
+      # v9.0.1では direct-child UUID一致0件のときに
+      #     $targetAbs = Join-Path $currentFolderFull $canonicalFile
+      # としていたため、canonicalFileと同名の既存ファイルが存在し、そのYAML UUIDが
+      # pk_CLIENTと一致しない(あるいはUUIDキー自体が無い)場合でも、後続の
+      #     if ($targetAbs -and (Test-Path -LiteralPath $targetAbs))
+      # へ流れて既存managed noteとして採用され、Update-Yaml-RobustでUUIDを
+      # 書き込んでしまう抜け道が残っていた。
+      #
+      # v9.0.2では direct-child UUID一致が0件の場合、$targetAbsは$nullのままとし、
+      # 新規CREATE候補pathは別変数$newCandidateAbsへ格納する。
+      # $newCandidateAbsが実在する場合でも既存managed noteとしては採用せず、
+      # 後段のCREATE直前チェックでTARGET_NOTE_FILENAME_CONFLICTとしてFail-closedする。
+      #
+      # サブフォルダ側に同一UUID+同一noteTypeのnoteがある場合は
+      # MANAGED_NOTE_OUT_OF_SCOPE で安全停止する。
+      # ================================================================
+      $unscopedNotes = @(Get-UciOutOfScopeManagedNotes $currentFolderFull $prefixStr $uuid)
+      $uciMatches = @(Get-UuidNoteTypeMatches $currentFolderFull $prefixStr $uuid)
+
+      if ($uciMatches.Count -ge 2) {
+          Out-NG "DUPLICATE_NOTE_TYPE" "同一UUID・同一noteTypeの既存ノートが顧客フォルダ直下に複数見つかりました。安全のため処理を中止します。(Folder: $foundFolder / noteType: $noteType / 件数: $($uciMatches.Count))"
+      }
+      if ($unscopedNotes.Count -ge 1) {
+          Out-NG "MANAGED_NOTE_OUT_OF_SCOPE" "管理対象ノートと同一UUID・同一noteTypeのノートが顧客フォルダのサブフォルダ内に存在します。自動採用・自動作成は行わず処理を中止します。(Folder: $foundFolder / noteType: $noteType / Path: $($unscopedNotes[0]))"
+      }
+
+      if ($uciMatches.Count -eq 1) {
+          # 正式managed note(direct-child + noteType一致 + 完全UUID一致)のみ採用する。
+          $targetAbs = $uciMatches[0]
+          $canonicalFile = Split-Path -Leaf $targetAbs
+      } else {
+          # ---- direct-child UUID一致 0件 ----
+          # ★ v9.0.2 (FIX-1): $targetAbsは$nullのまま維持する(既存note採用は行わない)。
+          # 新規CREATE候補pathのみを別変数へ保持する。
+          # ★ v9.0.2 (FIX-2): fuzzy候補は内部変数へ保持するだけで、Write-Host等の
+          #   追加診断出力は一切行わない(FileMaker応答契約へ新規出力を混在させない)。
+          $fuzzyCandidates = @(Get-UciFuzzyNameCandidates $currentFolderFull $prefixStr)
+          $newCandidateAbs = Join-Path $currentFolderFull $canonicalFile
+      }
+
+      # ---- v9.0.0: obs_RELPATH候補を最終フォルダ上で再検証して採用 ----
+      # hintのフォルダとidentity確定フォルダが矛盾する場合はFail-closed。
+      if ($null -ne $hintNoteAbs) {
+          $hintFinalAbs = Join-Path $currentFolderFull $hintFileName
+          $hintFolderConsistent = $false
+          if ($null -ne $hintFolderInfo) {
+              # 昇格Rename後は元パスが存在しないため、Rename前のフォルダ名/昇格後の名前いずれかと一致すればよい。
+              if ([string]::Equals($hintFolderInfo.FullName, $currentFolderFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+                  $hintFolderConsistent = $true
+              } elseif (-not (Test-Path -LiteralPath $hintFolderInfo.FullName)) {
+                  # 元フォルダが消えている = canonicalへRenameされた可能性。最終フォルダ上での実在で確認する。
+                  if (Test-Path -LiteralPath $hintFinalAbs -PathType Leaf) { $hintFolderConsistent = $true }
+              }
+          }
+          if (-not $hintFolderConsistent) {
+              Out-NG "RELPATH_FOLDER_MISMATCH" "obs_RELPATHが示す顧客フォルダと、完全UUIDで確定した顧客フォルダが一致しません。安全のため処理を中止します。(Hint: $($hintFolderInfo.Name) / Resolved: $foundFolder)"
+          }
+          if (Test-Path -LiteralPath $hintFinalAbs -PathType Leaf) {
+              $hintHdrFinal = Get-YamlHeaderLines $hintFinalAbs
+              if ($null -ne $hintHdrFinal) {
+                  $hintUuidFinal = Get-YamlScalarValue $hintHdrFinal "UUID:"
+                  if (
+                      -not [string]::IsNullOrWhiteSpace($hintUuidFinal) -and
+                      (Test-UciUuidFormat $hintUuidFinal) -and
+                      $hintUuidFinal.Trim().ToUpperInvariant() -eq $uuid.Trim().ToUpperInvariant() -and
+                      $hintFileName.StartsWith("${prefixStr}_", [System.StringComparison]::Ordinal)
+                  ) {
+                      # hintも「direct-child + noteType一致 + 完全UUID一致」を満たす場合のみ採用する。
+                      # (UUID検証済みであるため$targetAbsへの設定は正式ルールに適合する)
+                      $targetAbs = $hintFinalAbs
+                      $canonicalFile = $hintFileName
+                      $newCandidateAbs = $null
+                  }
+              }
+          }
+      }
+
+      # folderNameConfirmedはgo-aheadに過ぎない。canonical folderを別名へ降格しない。
+      # 既にcanonical名へ昇格済みのため、ここでのRenameは行わない。
+  } else {
+      # identity未確定(完全UUID証拠なし)。
+      # obs_RELPATHでnoteが見つかっていた場合でも、identityが確定しないままの採用は行わない。
+      if ($null -ne $hintNoteAbs) {
+          Out-NG "RELPATH_FOLDER_MISMATCH" "obs_RELPATHのノートは見つかりましたが、完全UUIDによる顧客フォルダ確定ができませんでした。安全のため処理を中止します。(Hint: $hintNoteAbs / pk_CLIENT: $uuid)"
+      }
+
+      # legacy顧客名一致フォルダの状態を確認する(自動作成の前に必ず判定する)。
+      $folders = Get-ChildItem -LiteralPath $custRoot -Directory -ErrorAction SilentlyContinue
+      $matchName = Normalize-ForMatch $nameRaw
+      $legacyCandidates = @($folders | Where-Object {
+          $_.Name -ne $canonicalFolderName -and (Normalize-ForMatch $_.Name) -eq $matchName
+      })
+      if ($legacyCandidates.Count -ge 1) {
+          # 完全UUID証拠が無いlegacyフォルダ。別canonicalフォルダを勝手に作らずFail-closed。
+          $legacyNames = ($legacyCandidates | ForEach-Object { $_.Name }) -join ";"
+          Out-NG "LEGACY_FOLDER_NEEDS_MIGRATION" "顧客名が一致するフォルダが存在しますが、pk_CLIENTの完全UUID証拠がないため同一顧客と確定できません。手動確認が必要です。(Folders: $legacyNames / pk_CLIENT: $uuid)"
+      }
+
+      # canonical名フォルダが既に存在するのに完全UUID証拠が無い場合(UUID8衝突等)も自動採用しない。
+      $canonicalExisting = @($folders | Where-Object { $_.Name -eq $canonicalFolderName })
+      if ($canonicalExisting.Count -ge 1) {
+          Out-NG "CANONICAL_FOLDER_NO_UUID_EVIDENCE" "canonical名の顧客フォルダは存在しますが、pk_CLIENTの完全UUID証拠がありません。UUID先頭8文字の衝突の可能性があるため処理を中止します。(Folder: $canonicalFolderName / pk_CLIENT: $uuid)"
+      }
+  }
+
+  # ▼▼▼ COMPARE モード (突合結果を開く) ▼▼▼
+  if ($true) {
+    if (-not $foundFolder) {
+       Out-NG "ERROR" "比較対象の顧客フォルダが見つかりません。(Search: $nameNorm / pk_CLIENT: $uuid)"
+    }
+    # ★ v9.0.1/v9.0.2: COMPAREの突合対象も正式managed note(UUID検証済み)でなければならない。
+    # fuzzy候補・UUID未検証の同名ファイルは採用しないため、
+    # UUID検証済みの$targetAbsが無い場合はPythonへ渡さず安全停止する。
+    if ([string]::IsNullOrWhiteSpace($targetAbs) -or -not (Test-Path -LiteralPath $targetAbs -PathType Leaf)) {
+       Out-NG "MANAGED_NOTE_NOT_FOUND" "突合対象の正式ノート(UUID一致・顧客フォルダ直下)が見つかりません。(Folder: $foundFolder / noteType: $noteType / Expected: $canonicalFile)"
+    }
+
+    $compareDir = Join-Path $custRoot $foundFolder
+
+    $scriptName = "diff_checker.py"
+    if ($noteType -match "事故一覧") { $scriptName = "diff_checker_jiko.py" }
+
+    $pyScript = Join-Path $PSScriptRoot $scriptName
+    if (-not (Test-Path -LiteralPath $pyScript)) { throw "Pythonスクリプトが見つかりません: $pyScript" }
+
+    $csvPath = $payload.csvPath
+    if (-not (Test-Path -LiteralPath $csvPath)) { throw "CSVファイルが見つかりません: $csvPath" }
+
+    $logOut = Join-Path $env:TEMP "_py_out.log"
+    $logErr = Join-Path $env:TEMP "_py_err.log"
+    $python = Resolve-PythonExecutable
+    $pythonArgs = @($python.PrefixArguments) + @($pyScript, $csvPath, $targetAbs)
+
+    Write-Host "--- [COMPARE START] ---" -ForegroundColor Cyan
+    Write-Host "Script : $scriptName"
+    Write-Host "Target : $targetAbs"
+
+    Push-Location -LiteralPath $compareDir
+    try {
+      & $python.FilePath @pythonArgs 1> $logOut 2> $logErr
+      $pythonExitCode = $LASTEXITCODE
+    } finally {
+      Pop-Location
+    }
+
+    if ($pythonExitCode -ne 0) {
+      Write-Host "Log (Err): $(Get-Content $logErr -Raw -ErrorAction SilentlyContinue)" -ForegroundColor Red
+      throw "Pythonスクリプトエラー (ExitCode: $pythonExitCode)"
+    }
+
+    $resultFileName = "突合結果(契約).md"
+    if ($noteType -match "事故一覧") { $resultFileName = "突合結果(事故).md" }
+
+    $resultFilePath = Join-Path $compareDir $resultFileName
+
+    if (-not (Test-Path -LiteralPath $resultFilePath)) {
+         throw "結果ファイルが生成されませんでした: $resultFilePath"
+    }
+
+    $rel = Get-RelPath $VaultRoot $resultFilePath
+    $lw  = (Get-Item -LiteralPath $resultFilePath).LastWriteTime
+
+    # 標準URIスキームでファイルを開く
+    Open-ObsidianFile $VaultRoot $rel
+
+    # FileMaker返却用URI
+    $url = Get-ObsidianOpenUrl $VaultRoot $rel
+
+    Out-OK "OPENED" $url $rel ($lw.ToString("yyyy-MM-ddTHH:mm:ss")) "COMPARE_DONE"
+  }
+  # ▲▲▲ COMPARE モード 終了 ▲▲▲
+    return
+  } finally {
+    if ($null -ne $lock) {
+      $lock.Close()
+      $lock.Dispose()
+    }
+  }
+}
+
+try {
+  if ([string]::IsNullOrWhiteSpace($PayloadB64)) {
+    if (-not (Test-Path -LiteralPath $PayloadFile)) { Out-NG "ERROR" "Payload not found." }
+    $PayloadB64 = (Get-Content -LiteralPath $PayloadFile -Raw -Encoding UTF8).Trim()
+    try { Remove-Item -LiteralPath $PayloadFile -Force -ErrorAction SilentlyContinue } catch {}
+  }
+
+  $payload = ConvertTo-Hashtable (ConvertFrom-Json (From-Base64Any $PayloadB64))
+  if ($null -eq $payload -or -not ($payload -is [hashtable])) {
+    Out-NG "ERROR" "Invalid payload format."
+    exit 0
+  }
+
+  $rawVaultRootGlobal = if ($payload.ContainsKey('VaultRoot')) { ([string]$payload["VaultRoot"]).Trim() } else { "" }
+  $actionName = if (($null -ne $payload) -and ($payload -is [hashtable]) -and $payload.ContainsKey('action')) { [string]$payload.action } else { "" }
+  $modeName = if (($null -ne $payload) -and ($payload -is [hashtable]) -and $payload.ContainsKey('MODE')) { [string]$payload.MODE } else { "" }
+  $reqIdGlobal = if (($null -ne $payload) -and ($payload -is [hashtable]) -and $payload.ContainsKey('requestId')) { [string]$payload.requestId } else { "" }
+
+  $vaultRootGlobal = if (-not [string]::IsNullOrWhiteSpace($rawVaultRootGlobal)) { Resolve-Win32CanonicalPath $rawVaultRootGlobal } else { $null }
+  $isValidVault = (-not [string]::IsNullOrWhiteSpace($vaultRootGlobal)) -and (Test-Path -LiteralPath $vaultRootGlobal -PathType Container)
+
+  if (-not $isValidVault) {
+    if ($actionName -in @("PLAN_CUSTOMER_FOLDER_MERGE", "APPLY_CUSTOMER_FOLDER_MERGE")) {
+      Write-Output (New-MergeResponse $reqIdGlobal "NG" "INVALID_REQUEST" "VaultRootが存在しないか、正規化に失敗しました: $rawVaultRootGlobal")
+      exit 0
+    }
+    if ($actionName -eq "UPDATE_CUSTOMER_IDENTITY") {
+      $code = if ([string]::IsNullOrWhiteSpace($rawVaultRootGlobal)) { "MISSING_REQUIRED_FIELD" } else { "INVALID_REQUEST" }
+      Write-Output (New-UCIResponse $reqIdGlobal "NG" $code "VaultRootが存在しないか、正規化に失敗しました: $rawVaultRootGlobal")
+      exit 0
+    }
+    Out-NG "ERROR" "VaultRoot not found: $rawVaultRootGlobal"
+  }
+
+  $payload["VaultRoot"] = $vaultRootGlobal
+
+  if ($actionName -eq "PLAN_CUSTOMER_FOLDER_MERGE") {
+    Invoke-PlanCustomerFolderMerge $payload
+    exit 0
+  }
+
+  if ($actionName -eq "APPLY_CUSTOMER_FOLDER_MERGE") {
+    Invoke-ApplyCustomerFolderMerge $payload
+    exit 0
+  }
+
+  if ($actionName -eq "UPDATE_CUSTOMER_IDENTITY") {
+    try {
+      Invoke-UpdateCustomerIdentity $payload
+    } catch {
+      $reqIdSafe = $null
+      try {
+        if ($payload.requestId -is [string] -and -not [string]::IsNullOrWhiteSpace($payload.requestId)) {
+          $reqIdSafe = $payload.requestId
+        }
+      } catch {}
+      Write-Output (New-UCIResponse $reqIdSafe "NG" "EXECUTION_FAILED" "処理中に予期しないエラーが発生しました。")
+    }
+    exit 0
+  }
+
+  $modeName = if ($payload.ContainsKey("MODE")) { [string]$payload.MODE } else { "" }
+  if ($modeName -eq "COMPARE") {
+    Invoke-CompareObsidianNotes $payload
+    exit 0
+  }
+
+  if ($modeName -eq "CHECK") {
+    Invoke-CheckObsidianNotes $payload
+    exit 0
+  }
+
+  if ($modeName -eq "OPEN" -or [string]::IsNullOrWhiteSpace($modeName)) {
+    Invoke-OpenObsidianNotes $payload
+    exit 0
+  }
 
 } catch {
   $ex = $_.Exception
