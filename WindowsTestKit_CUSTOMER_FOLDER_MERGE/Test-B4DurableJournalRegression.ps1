@@ -19,41 +19,7 @@ if (-not (Test-Path -LiteralPath $TargetScript)) {
   exit 1
 }
 
-# 1. Load Win32 native types
-if (-not ([System.Management.Automation.PSTypeName]'Win32NativeMergeHelper').Type) {
-  Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-using System.Text;
-
-public static class Win32NativeMergeHelper {
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "GetLongPathNameW")]
-    public static extern uint GetLongPathName(string lpszShortPath, StringBuilder lpszLongPath, uint cchBuffer);
-
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateDirectoryW")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool CreateDirectory(string lpPathName, IntPtr lpSecurityAttributes);
-}
-"@
-}
-
-if (-not ([System.Management.Automation.PSTypeName]'Win32DurableJournalHelper').Type) {
-  Add-Type -TypeDefinition @"
-using System;
-using System.Runtime.InteropServices;
-
-public static class Win32DurableJournalHelper {
-    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "MoveFileExW")]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool MoveFileEx(string lpExistingFileName, string lpNewFileName, uint dwFlags);
-
-    public const uint MOVEFILE_REPLACE_EXISTING = 0x1;
-    public const uint MOVEFILE_WRITE_THROUGH    = 0x8;
-}
-"@
-}
-
-# 2. Parse TargetScript AST and load all function definitions
+# 1. Parse TargetScript AST
 $astErrors = $null
 $astTokens = $null
 $scriptAst = [System.Management.Automation.Language.Parser]::ParseFile(
@@ -67,6 +33,19 @@ if ($astErrors.Count -gt 0) {
   exit 1
 }
 
+# 2. Load Win32 native types directly from production script AST
+$bootstrapAsts = $scriptAst.FindAll({
+  param($n)
+  $n -is [System.Management.Automation.Language.IfStatementAst] -and
+  ($n.Extent.Text -match 'Win32NativeMergeHelper' -or $n.Extent.Text -match 'Win32DurableJournalHelper') -and
+  $n.Extent.Text -match 'Add-Type'
+}, $false)
+
+foreach ($bAst in $bootstrapAsts) {
+  Invoke-Expression $bAst.Extent.Text
+}
+
+# 3. Load all function definitions from production script AST
 $funcAsts = $scriptAst.FindAll({
   param($n)
   $n -is [System.Management.Automation.Language.FunctionDefinitionAst]

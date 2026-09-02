@@ -20,7 +20,7 @@ param(
   [string]$TestRoot = "",
   [string]$PowerShellExe = "powershell.exe",
   [string]$ProductionVaultRoot = "C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS",
-  [string]$ExpectedTargetSha256 = "A7B881268D2DBF02795035001417A777DEF2D8B867868CDF2D716DDED4C59750"
+  [string]$ExpectedTargetSha256 = "3C37D4818D89050BC3F22740A40F3FDC42F714182F4131894A2359AB733AB059"
 )
 
 if ([string]::IsNullOrWhiteSpace($TargetScript)) {
@@ -1385,6 +1385,10 @@ $f1_M21_a = Join-Path $vM21_a "01_顧客\株式会社テスト_A"
 $f2_M21_a = Join-Path $vM21_a "01_顧客\株式会社テスト_B"
 Create-MockNote $f1_M21_a "🟨契約_テスト.md" $uuid1 "契約"
 Create-MockNote $f2_M21_a "🟥事故_テスト.md" $uuid1 "事故"
+$f1_M21_b = Join-Path $vM21_b "01_顧客\株式会社テスト_A"
+$f2_M21_b = Join-Path $vM21_b "01_顧客\株式会社テスト_B"
+Create-MockNote $f1_M21_b "🟨契約_テスト.md" $uuid1 "契約"
+Create-MockNote $f2_M21_b "🟥事故_テスト.md" $uuid1 "事故"
 $res_M21_plan = Invoke-BridgePayload $TargetScript @{
   protocolVersion = 1; action = "PLAN_CUSTOMER_FOLDER_MERGE"; requestId = "req-M21-plan"; VaultRoot = $vM21_a; pk_CLIENT = $uuid1; companyNameRaw = "株式会社テスト"
 }
@@ -1392,7 +1396,18 @@ $planToken_M21 = if ($null -ne $res_M21_plan.Json -and $null -ne $res_M21_plan.J
 $res_M21_apply = Invoke-BridgePayload $TargetScript @{
   protocolVersion = 1; action = "APPLY_CUSTOMER_FOLDER_MERGE"; requestId = "req-M21-apply"; VaultRoot = $vM21_b; pk_CLIENT = $uuid1; companyNameRaw = "株式会社テスト"; planToken = $planToken_M21
 }
-$isPass_M21 = ($null -ne $res_M21_apply.Json -and ($res_M21.Json.code -eq "MERGE_PLAN_STALE" -or $res_M21.Json.code -eq "INVALID_REQUEST"))
+$isPass_M21 = (
+  $null -ne $res_M21_apply.Json -and
+  $res_M21_apply.Json.status -eq "NG" -and
+  $res_M21_apply.Json.code -eq "PLAN_TOKEN_MISMATCH"
+)
+$res_M21_pos_plan = Invoke-BridgePayload $TargetScript @{
+  protocolVersion = 1; action = "PLAN_CUSTOMER_FOLDER_MERGE"; requestId = "req-M21-pos-plan"; VaultRoot = $vM21_b; pk_CLIENT = $uuid1; companyNameRaw = "株式会社テスト"
+}
+$posToken_M21 = if ($null -ne $res_M21_pos_plan.Json -and $null -ne $res_M21_pos_plan.Json.planToken) { $res_M21_pos_plan.Json.planToken } else { "dummyToken" }
+$res_M21_pos_apply = Invoke-BridgePayload $TargetScript @{
+  protocolVersion = 1; action = "APPLY_CUSTOMER_FOLDER_MERGE"; requestId = "req-M21-pos-apply"; VaultRoot = $vM21_b; pk_CLIENT = $uuid1; companyNameRaw = "株式会社テスト"; planToken = $posToken_M21
+}
 Record-TestResult -Id "M21" -Name "同一 snapshot の別 VaultRoot 適用拒否 (CUSTOMER_ROOT 不一致)" -TestType "DIRECT_EXECUTION" `
   -Status $(if ($isPass_M21) { "PASS_EXISTING" } else { "EXECUTED_EXPECTED_RED" }) `
   -EvidenceAuthority "DIRECT_PRECONDITION_PROOF" `
@@ -1400,8 +1415,8 @@ Record-TestResult -Id "M21" -Name "同一 snapshot の別 VaultRoot 適用拒否
   -PreconditionsObserved "Different VaultRoot used for APPLY (PreconditionPass: $true)" `
   -PreconditionPass $true `
   -ExecutionPerformed "Invoke-BridgePayload APPLY_CUSTOMER_FOLDER_MERGE" `
-  -AssertionPerformed "code == MERGE_PLAN_STALE / INVALID_REQUEST" `
-  -ActualEvidence "Observed: $($res_M21_apply.Stdout.Trim())"
+  -AssertionPerformed "code == PLAN_TOKEN_MISMATCH" `
+  -ActualEvidence "Observed: $($res_M21_apply.Stdout.Trim()) | PosControl: $($res_M21_pos_apply.Stdout.Trim())"
 
 # M22: 全 managed note 内容 SHA256 完全一致 (STATIC_CAPABILITY)
 $proof_M22 = Get-StructuralReachabilityProof "APPLY_CUSTOMER_FOLDER_MERGE" "File Content SHA256 Integrity"
@@ -1600,12 +1615,16 @@ Record-TestResult -Id "M31" -Name "Staging パス衝突時の GUID 再生成リ�
   -ActualEvidence $proof_M31.ProofResult
 
 # M32: Win32 ERROR_ALREADY_EXISTS 検知 (STATIC_CAPABILITY)
-$absent_M32 = Assert-TargetSymbolAbsent "CreateDirectoryW"
-$req_M32 = @("PInvokeDeclaration:CreateDirectoryW", "ErrorCodeHandling:ERROR_ALREADY_EXISTS_183", "AtomicDirectoryCreationCall")
+$absent_M32       = Assert-TargetSymbolAbsent "CreateDirectoryW"
+$absent_M32_183   = Assert-TargetSymbolAbsent "STAGING_DIR_ALREADY_EXISTS"
+$absent_M32_nat   = Assert-TargetSymbolAbsent "STAGING_DIR_CREATE_FAILED_NATIVE"
+$req_M32 = @("PInvokeDeclaration:CreateDirectoryW", "ErrorCodeHandling:StagingDirAlreadyExists183", "ErrorCodeHandling:StagingDirCreateFailedNative")
 $obs_M32 = @()
-if (-not $absent_M32) { $obs_M32 += "PInvokeDeclaration:CreateDirectoryW" }
+if (-not $absent_M32)     { $obs_M32 += "PInvokeDeclaration:CreateDirectoryW" }
+if (-not $absent_M32_183) { $obs_M32 += "ErrorCodeHandling:StagingDirAlreadyExists183" }
+if (-not $absent_M32_nat) { $obs_M32 += "ErrorCodeHandling:StagingDirCreateFailedNative" }
 $missing_M32 = @($req_M32 | Where-Object { $obs_M32 -notcontains $_ })
-$green_M32 = ($missing_M32.Count -eq 0)
+$green_M32   = ($missing_M32.Count -eq 0)
 Record-TestResult -Id "M32" -Name "Win32 ERROR_ALREADY_EXISTS 検知による外部保護停止" -TestType "STATIC_CAPABILITY" `
   -Status $(if ($green_M32) { "PASS_EXISTING" } else { "STATIC_CAPABILITY_RED" }) `
   -EvidenceAuthority "NORMATIVE_API_PRIMITIVE" `
@@ -1614,8 +1633,8 @@ Record-TestResult -Id "M32" -Name "Win32 ERROR_ALREADY_EXISTS 検知による外
   -RequiredComponents $req_M32 `
   -ObservedComponents $obs_M32 `
   -MissingComponents $missing_M32 `
-  -GreenPredicate "PInvokeDeclared -and ErrorCodeHandled -and AtomicCallPresent" `
-  -SemanticAbsenceReason "Frozen contract normatively requires Win32 CreateDirectoryW for atomic directory creation with ERROR_ALREADY_EXISTS detection; all components absent" `
+  -GreenPredicate "PInvokeDeclared -and StagingDirAlreadyExists183Handled -and StagingDirCreateFailedNativeHandled" `
+  -SemanticAbsenceReason "Frozen contract normatively requires Win32 CreateDirectoryW for atomic directory creation with ERROR_ALREADY_EXISTS and native failure classification; all components absent" `
   -ExecutionPerformed "P/Invoke declaration & API call search" `
   -AssertionPerformed "CreateDirectoryW P/Invoke declared and handles ERROR_ALREADY_EXISTS" `
   -ActualEvidence "CreateDirectoryW absent: $absent_M32, Missing: $($missing_M32 -join ', ')"

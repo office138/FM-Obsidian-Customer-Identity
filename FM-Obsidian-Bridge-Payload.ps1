@@ -1369,6 +1369,94 @@ public static class Win32NativeMergeHelper {
         string lpPathName,
         IntPtr lpSecurityAttributes
     );
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct BY_HANDLE_FILE_INFORMATION {
+        public uint dwFileAttributes;
+        public uint ftCreationTimeLow;
+        public uint ftCreationTimeHigh;
+        public uint ftLastAccessTimeLow;
+        public uint ftLastAccessTimeHigh;
+        public uint ftLastWriteTimeLow;
+        public uint ftLastWriteTimeHigh;
+        public uint dwVolumeSerialNumber;
+        public uint nFileSizeHigh;
+        public uint nFileSizeLow;
+        public uint nNumberOfLinks;
+        public uint nFileIndexHigh;
+        public uint nFileIndexLow;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetFileInformationByHandle(
+        IntPtr hFile,
+        out BY_HANDLE_FILE_INFORMATION lpFileInformation
+    );
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct WIN32_FIND_STREAM_DATA {
+        public long StreamSize;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 296)]
+        public string cStreamName;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "FindFirstStreamW")]
+    public static extern IntPtr FindFirstStream(
+        string lpFileName,
+        int InfoLevel,
+        out WIN32_FIND_STREAM_DATA lpFindStreamData,
+        uint dwFlags
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "FindNextStreamW")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool FindNextStream(
+        IntPtr hFindStream,
+        out WIN32_FIND_STREAM_DATA lpFindStreamData
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool FindClose(IntPtr hFindFile);
+    [StructLayout(LayoutKind.Sequential)]
+    public struct FILE_CASE_SENSITIVE_INFO {
+        public uint Flags;
+    }
+
+    public const int FileCaseSensitiveInfo = 23;
+    public const uint FILE_CS_FLAG_CASE_SENSITIVE_DIR = 0x00000001;
+
+    public const uint FILE_READ_ATTRIBUTES = 0x0080;
+    public const uint FILE_SHARE_READ   = 0x00000001;
+    public const uint FILE_SHARE_WRITE  = 0x00000002;
+    public const uint FILE_SHARE_DELETE = 0x00000004;
+    public const uint OPEN_EXISTING = 3;
+    public const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode, EntryPoint = "CreateFileW")]
+    public static extern IntPtr CreateFile(
+        string lpFileName,
+        uint dwDesiredAccess,
+        uint dwShareMode,
+        IntPtr lpSecurityAttributes,
+        uint dwCreationDisposition,
+        uint dwFlagsAndAttributes,
+        IntPtr hTemplateFile
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool GetFileInformationByHandleEx(
+        IntPtr hFile,
+        int FileInformationClass,
+        out FILE_CASE_SENSITIVE_INFO lpFileInformation,
+        uint dwBufferSize
+    );
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool CloseHandle(IntPtr hObject);
 }
 "@
 }
@@ -1464,6 +1552,183 @@ function New-Win32ExclusiveDirectory {
   return @{ Success = $true; ErrorCode = 0 }
 }
 
+function Get-FileHardLinkCountSafe {
+  param([string]$FilePath)
+  if ([string]::IsNullOrWhiteSpace($FilePath)) { return -1 }
+
+  $stream = $null
+  try {
+    $stream = [System.IO.File]::Open($FilePath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+    $handle = $stream.SafeFileHandle.DangerousGetHandle()
+
+    $info = New-Object Win32NativeMergeHelper+BY_HANDLE_FILE_INFORMATION
+    $ok = [Win32NativeMergeHelper]::GetFileInformationByHandle($handle, [ref]$info)
+    if (-not $ok) { return -1 }
+    return [int]$info.nNumberOfLinks
+  }
+  catch {
+    return -1
+  }
+  finally {
+    if ($null -ne $stream) {
+      $stream.Dispose()
+    }
+  }
+}
+
+function Test-DirectoryCaseSensitiveSafe {
+  param([string]$DirectoryPath)
+  if ([string]::IsNullOrWhiteSpace($DirectoryPath)) {
+    return @{ Status = "INCONCLUSIVE"; Details = "DirectoryPath is null or empty"; ErrorCode = -1 }
+  }
+
+  $desiredAccess = [uint32]0x0080 # FILE_READ_ATTRIBUTES
+  $shareMode = [uint32]0x00000007 # FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+  $creationDisp = [uint32]3        # OPEN_EXISTING
+  $flagsAndAttrs = [uint32]0x02000000 # FILE_FLAG_BACKUP_SEMANTICS
+  $nullPtr = [IntPtr]::Zero
+  $invalidHandle = [IntPtr](-1)
+
+  $handle = [Win32NativeMergeHelper]::CreateFile(
+    $DirectoryPath,
+    $desiredAccess,
+    $shareMode,
+    $nullPtr,
+    $creationDisp,
+    $flagsAndAttrs,
+    $nullPtr
+  )
+
+  if ($handle -eq $invalidHandle -or $handle -eq [IntPtr]::Zero) {
+    $lastErr = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    return @{
+      Status    = "INCONCLUSIVE"
+      Details   = "CreateFile failed to open directory handle with Win32 error $lastErr"
+      ErrorCode = $lastErr
+    }
+  }
+
+  try {
+    $info = New-Object Win32NativeMergeHelper+FILE_CASE_SENSITIVE_INFO
+    $structSize = [uint32][System.Runtime.InteropServices.Marshal]::SizeOf($info)
+    $success = [Win32NativeMergeHelper]::GetFileInformationByHandleEx(
+      $handle,
+      [Win32NativeMergeHelper]::FileCaseSensitiveInfo,
+      [ref]$info,
+      $structSize
+    )
+
+    if (-not $success) {
+      $lastErr = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+      return @{
+        Status    = "INCONCLUSIVE"
+        Details   = "GetFileInformationByHandleEx(FileCaseSensitiveInfo) failed with Win32 error $lastErr"
+        ErrorCode = $lastErr
+      }
+    }
+
+    if (($info.Flags -band [Win32NativeMergeHelper]::FILE_CS_FLAG_CASE_SENSITIVE_DIR) -ne 0) {
+      return @{
+        Status    = "CASE_SENSITIVE"
+        Details   = "顧客ルートフォルダが大文字/小文字を区別するディレクトリとして設定されています: $DirectoryPath"
+        ErrorCode = 0
+      }
+    }
+    else {
+      return @{
+        Status    = "CASE_INSENSITIVE"
+        Details   = "Directory is case-insensitive (Flags=0x$($info.Flags.ToString('X8')))"
+        ErrorCode = 0
+      }
+    }
+  }
+  catch {
+    return @{
+      Status    = "INCONCLUSIVE"
+      Details   = "Exception during directory case sensitivity query: $($_.Exception.Message)"
+      ErrorCode = -1
+    }
+  }
+  finally {
+    if ($handle -ne $invalidHandle -and $handle -ne [IntPtr]::Zero) {
+      [void][Win32NativeMergeHelper]::CloseHandle($handle)
+    }
+  }
+}
+
+function Test-FileAlternateDataStreamsSafe {
+  param([string]$FilePath)
+  if ([string]::IsNullOrWhiteSpace($FilePath)) {
+    return @{ Status = "INCONCLUSIVE"; NamedStreams = @(); Details = "FilePath is null or empty"; ErrorCode = -1 }
+  }
+
+  $data = New-Object Win32NativeMergeHelper+WIN32_FIND_STREAM_DATA
+  $invalidHandle = [IntPtr](-1)
+  $handle = [Win32NativeMergeHelper]::FindFirstStream($FilePath, 0, [ref]$data, [uint32]0)
+  
+  if ($handle -eq $invalidHandle -or $handle -eq [IntPtr]::Zero) {
+    $err = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    return @{
+      Status       = "INCONCLUSIVE"
+      NamedStreams = @()
+      Details      = "FindFirstStream failed with Win32 error $err"
+      ErrorCode    = $err
+    }
+  }
+
+  $namedStreams = New-Object System.Collections.Generic.List[string]
+  try {
+    if ($data.cStreamName -and -not $data.cStreamName.Equals('::$DATA', [System.StringComparison]::OrdinalIgnoreCase)) {
+      $namedStreams.Add($data.cStreamName)
+    }
+
+    while ([Win32NativeMergeHelper]::FindNextStream($handle, [ref]$data)) {
+      if ($data.cStreamName -and -not $data.cStreamName.Equals('::$DATA', [System.StringComparison]::OrdinalIgnoreCase)) {
+        $namedStreams.Add($data.cStreamName)
+      }
+    }
+
+    $lastErr = [System.Runtime.InteropServices.Marshal]::GetLastWin32Error()
+    if ($lastErr -ne 38) {
+      return @{
+        Status       = "INCONCLUSIVE"
+        NamedStreams = @($namedStreams)
+        Details      = "FindNextStream ended with unexpected Win32 error $lastErr (expected ERROR_HANDLE_EOF 38)"
+        ErrorCode    = $lastErr
+      }
+    }
+
+    if ($namedStreams.Count -gt 0) {
+      return @{
+        Status       = "HAS_ADS"
+        NamedStreams = @($namedStreams)
+        Details      = "Named alternate data streams detected: $($namedStreams -join ', ')"
+        ErrorCode    = 0
+      }
+    }
+
+    return @{
+      Status       = "CLEAN"
+      NamedStreams = @()
+      Details      = "No named alternate data streams detected"
+      ErrorCode    = 0
+    }
+  }
+  catch {
+    return @{
+      Status       = "INCONCLUSIVE"
+      NamedStreams = @($namedStreams)
+      Details      = "Exception during stream enumeration: $($_.Exception.Message)"
+      ErrorCode    = -1
+    }
+  }
+  finally {
+    if ($handle -ne $invalidHandle -and $handle -ne [IntPtr]::Zero) {
+      [void][Win32NativeMergeHelper]::FindClose($handle)
+    }
+  }
+}
+
 function Get-FileSha256Raw {
   param([string]$FilePath)
   if (-not (Test-Path -LiteralPath $FilePath -PathType Leaf)) { return $null }
@@ -1490,13 +1755,16 @@ function New-MergePlanTokenV3 {
   $bw.Write($Uuid.ToUpperInvariant())
   $bw.Write($CanonicalFolderName)
 
-  $sortedFolders = @($SourceFolders | Sort-Object)
+  $sortedFolders = [string[]]@($SourceFolders)
+  [System.Array]::Sort($sortedFolders, [System.StringComparer]::Ordinal)
   $bw.Write([int32]$sortedFolders.Count)
   foreach ($sf in $sortedFolders) {
     $bw.Write($sf)
   }
 
-  $sortedFiles = @($ManagedFiles | Sort-Object { $_.RelativePath })
+  $fileKeys    = [string[]]@($ManagedFiles | ForEach-Object { $_.RelativePath })
+  $sortedFiles = [object[]]@($ManagedFiles)
+  [System.Array]::Sort([Array]$fileKeys, [Array]$sortedFiles, [System.StringComparer]::Ordinal)
   $bw.Write([int32]$sortedFiles.Count)
   foreach ($mf in $sortedFiles) {
     $bw.Write($mf.RelativePath)
@@ -1528,7 +1796,37 @@ function Get-CustomerMergeTopology {
     return @{ Error = "CUSTOMER_NOT_FOUND"; Details = "顧客ルートフォルダ '01_顧客' が存在しません。" }
   }
 
-  $dirInfos = Get-ChildItem -LiteralPath $custRoot -Directory -Force -ErrorAction SilentlyContinue
+  $custRootInfo = Get-Item -LiteralPath $custRoot
+  if (($custRootInfo.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+    return @{
+      Error   = "MERGE_REPARSE_POINT_UNSUPPORTED"
+      Details = "顧客ルートフォルダ自体が再解析ポイント(ジャンクション/シンボリックリンク)です: $custRoot"
+    }
+  }
+  $csCheck = Test-DirectoryCaseSensitiveSafe $custRoot
+  if ($csCheck.Status -eq "CASE_SENSITIVE") {
+    return @{
+      Error   = "MERGE_CASE_SENSITIVE_DIRECTORY_UNSUPPORTED"
+      Details = "顧客ルートフォルダが大文字/小文字を区別するディレクトリとして設定されています: $custRoot"
+    }
+  }
+  if ($csCheck.Status -ne "CASE_INSENSITIVE") {
+    return @{
+      Error   = "MERGE_CASE_SENSITIVE_DIRECTORY_UNSUPPORTED"
+      Details = "顧客ルートフォルダのケースセンシティブ状態を安全に確認できませんでした(フェイルクローズ): $($csCheck.Details)"
+    }
+  }
+
+  try {
+    $dirInfos = Get-ChildItem -LiteralPath $custRoot -Directory -Force -ErrorAction Stop
+  }
+  catch {
+    $errClass = Get-LockAcquisitionErrorClass $_.Exception
+    return @{
+      Error   = "MERGE_TOPOLOGY_ENUMERATION_FAILED"
+      Details = "顧客ルートフォルダの列挙に失敗しました ($errClass): $($_.Exception.Message) (対象パス: $custRoot)"
+    }
+  }
   $matchedFolders = @()
   $prefixMap = Get-UciKnownPrefixMap
 
@@ -1537,7 +1835,16 @@ function Get-CustomerMergeTopology {
       return @{ Error = "MERGE_REPARSE_POINT_UNSUPPORTED"; Details = "顧客フォルダ内に再解析ポイント(ジャンクション/シンボリックリンク)が検出されました: $($dir.FullName)" }
     }
 
-    $files = Get-ChildItem -LiteralPath $dir.FullName -File -Force -ErrorAction SilentlyContinue
+    try {
+      $files = Get-ChildItem -LiteralPath $dir.FullName -File -Force -ErrorAction Stop
+    }
+    catch {
+      $errClass = Get-LockAcquisitionErrorClass $_.Exception
+      return @{
+        Error   = "MERGE_TOPOLOGY_ENUMERATION_FAILED"
+        Details = "顧客フォルダ内ファイルの列挙に失敗しました ($errClass): $($_.Exception.Message) (対象パス: $($dir.FullName))"
+      }
+    }
     $hasTargetUuid = $false
     $folderUuids = New-Object System.Collections.Generic.HashSet[string]
     $folderNoteTypes = New-Object System.Collections.Generic.HashSet[string]
@@ -1547,6 +1854,35 @@ function Get-CustomerMergeTopology {
     foreach ($file in $files) {
       if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
         return @{ Error = "MERGE_REPARSE_POINT_UNSUPPORTED"; Details = "ファイル '$($file.FullName)' に再解析ポイントが検出されました。" }
+      }
+
+      $linkCount = Get-FileHardLinkCountSafe $file.FullName
+      if ($linkCount -lt 0) {
+        return @{
+          Error   = "MERGE_HARDLINK_UNSUPPORTED"
+          Details = "ファイル '$($file.FullName)' のハードリンク状態を安全に確認できませんでした(フェイルクローズ)。"
+        }
+      }
+      if ($linkCount -gt 1) {
+        return @{
+          Error   = "MERGE_HARDLINK_UNSUPPORTED"
+          Details = "ファイル '$($file.FullName)' はハードリンクです(リンク数: $linkCount)。"
+        }
+      }
+
+      $adsCheck = Test-FileAlternateDataStreamsSafe $file.FullName
+      if ($adsCheck.Status -eq "HAS_ADS") {
+        $streamSummary = ($adsCheck.NamedStreams -join ', ')
+        return @{
+          Error   = "MERGE_ALTERNATE_DATA_STREAM_UNSUPPORTED"
+          Details = "ファイル '$($file.FullName)' に未対応の代替データストリーム(ADS)が検出されました ($streamSummary)。"
+        }
+      }
+      if ($adsCheck.Status -ne "CLEAN") {
+        return @{
+          Error   = "MERGE_ALTERNATE_DATA_STREAM_UNSUPPORTED"
+          Details = "ファイル '$($file.FullName)' の代替データストリーム(ADS)状態を安全に確認できませんでした(フェイルクローズ): $($adsCheck.Details)"
+        }
       }
 
       if ($file.Name.EndsWith(".md", [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -1601,12 +1937,30 @@ function Get-CustomerMergeTopology {
       }
     }
 
-    $subDirs = Get-ChildItem -LiteralPath $dir.FullName -Directory -Recurse -Force -ErrorAction SilentlyContinue
+    try {
+      $subDirs = Get-ChildItem -LiteralPath $dir.FullName -Directory -Recurse -Force -ErrorAction Stop
+    }
+    catch {
+      $errClass = Get-LockAcquisitionErrorClass $_.Exception
+      return @{
+        Error   = "MERGE_TOPOLOGY_ENUMERATION_FAILED"
+        Details = "顧客フォルダ配下のサブフォルダ列挙に失敗しました ($errClass): $($_.Exception.Message) (対象パス: $($dir.FullName))"
+      }
+    }
     foreach ($sd in $subDirs) {
       if (($sd.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
         return @{ Error = "MERGE_REPARSE_POINT_UNSUPPORTED"; Details = "サブフォルダ '$($sd.FullName)' に再解析ポイントが検出されました。" }
       }
-      $subFiles = Get-ChildItem -LiteralPath $sd.FullName -File -Force -ErrorAction SilentlyContinue
+      try {
+        $subFiles = Get-ChildItem -LiteralPath $sd.FullName -File -Force -ErrorAction Stop
+      }
+      catch {
+        $errClass = Get-LockAcquisitionErrorClass $_.Exception
+        return @{
+          Error   = "MERGE_TOPOLOGY_ENUMERATION_FAILED"
+          Details = "サブフォルダ内ファイルの列挙に失敗しました ($errClass): $($_.Exception.Message) (対象パス: $($sd.FullName))"
+        }
+      }
       foreach ($sf in $subFiles) {
         if ($sf.Name.EndsWith(".md", [System.StringComparison]::OrdinalIgnoreCase)) {
           $subHeader = Get-YamlHeaderLines $sf.FullName
@@ -1693,7 +2047,11 @@ function New-MergeStagingOwnershipSafe {
   $stagingDir = Join-Path $TxDir "staging_$TxId"
   $createRes = New-Win32ExclusiveDirectory $stagingDir
   if (-not $createRes.Success) {
-    throw "排他的ステージングディレクトリの作成に失敗しました (Win32Error: $($createRes.ErrorCode)): $stagingDir"
+    if ($createRes.ErrorCode -eq 183) {
+      throw "排他的ステージングディレクトリの作成に失敗しました (Win32Error: $($createRes.ErrorCode), Class: STAGING_DIR_ALREADY_EXISTS): $stagingDir"
+    } else {
+      throw "排他的ステージングディレクトリの作成に失敗しました (Win32Error: $($createRes.ErrorCode), Class: STAGING_DIR_CREATE_FAILED_NATIVE): $stagingDir"
+    }
   }
 
   $ownerMarkerPath = Join-Path $stagingDir ".fm-obsidian-merge-owner"
@@ -2869,6 +3227,9 @@ function Invoke-ApplyCustomerFolderMerge {
     }
 
     $finalTopo = Get-CustomerMergeTopology $vaultRoot $uuid $nameRaw
+    if ($null -ne $finalTopo.Error) {
+      throw "マージ後のトポロジ検証でエラーが発生しました ($($finalTopo.Error)): $($finalTopo.Details)"
+    }
     if ($finalTopo.MatchedFolders.Count -ne 1 -or $finalTopo.MatchedFolders[0].FolderName -ne $topo.CanonicalFolderName) {
       throw "マージ後のトポロジ検証に失敗しました: フォルダが単一Canonicalに集約されていません。"
     }

@@ -52,7 +52,7 @@ param(
   [string]$TestRoot = "",
   [string]$PowerShellExe = "powershell.exe",
   [string]$ProductionVaultRoot = "",
-  [string]$ExpectedTargetSha256 = "A7B881268D2DBF02795035001417A777DEF2D8B867868CDF2D716DDED4C59750"
+  [string]$ExpectedTargetSha256 = "3C37D4818D89050BC3F22740A40F3FDC42F714182F4131894A2359AB733AB059"
 )
 
 # 回帰修正(2026-07-29d): paramブロックの既定値でPSScriptRootを直接評価すると、
