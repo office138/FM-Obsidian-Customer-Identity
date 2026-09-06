@@ -69,10 +69,12 @@ Requests arrive as a Base64-encoded JSON payload either via `-PayloadB64` or `-P
 ### Primary Action Handlers:
 1. `PLAN_CUSTOMER_FOLDER_MERGE` -> `Invoke-PlanCustomerFolderMerge`:
    - Acquires exclusive per-vault transaction lock (`ACTIVE.lock`).
-   - Scans customer root `01_顧客` via `Get-CustomerMergeTopology`.
-   - Validates all filesystem safety invariants (ReparsePoint, HardLink, ADS, CaseSensitivity).
-   - Generates plan token via `New-MergePlanTokenV3`.
-   - Releases lock and returns structured plan JSON (`MERGE_PLAN_READY`).
+   - Scans customer root `01_顧客` via `Get-CustomerMergeTopology` and validates filesystem safety invariants (ReparsePoint, HardLink, ADS, CaseSensitivity).
+   - Branches on `MatchedFolders.Count`:
+     - 0 matched folders: returns terminal `NG` / `CUSTOMER_NOT_FOUND` via topology error handling.
+     - 1 matched folder: returns terminal `OK` / `MERGE_NOT_REQUIRED`; no plan, no planToken, no Token V3.
+     - 2+ matched folders: continues through canonical destination determination, managed-note evaluation, `DUPLICATE_NOTE_TYPE` protection, plan construction, Token V3 generation, and returns structured plan JSON (`MERGE_PLAN_READY`).
+   - Releases the per-vault lock on branch exit.
 2. `APPLY_CUSTOMER_FOLDER_MERGE` -> `Invoke-ApplyCustomerFolderMerge`:
    - Acquires exclusive per-vault transaction lock (`ACTIVE.lock`).
    - Validates requested plan token against live recomputed plan token.
@@ -96,7 +98,7 @@ Requests arrive as a Base64-encoded JSON payload either via `-PayloadB64` or `-P
 
 ## 3. Win32 Native Interoperability (P/Invoke) Layer
 
-To guarantee safety beyond standard .NET abstractions, the payload includes a C# type definition (`Win32IO`) compiling native Win32 kernel APIs:
+To guarantee safety beyond standard .NET abstractions, the payload includes a C# type definition (`Win32NativeMergeHelper`) compiling native Win32 kernel APIs:
 
 | Win32 API Function | Usage in Payload | Safety Purpose |
 |---|---|---|
@@ -104,8 +106,10 @@ To guarantee safety beyond standard .NET abstractions, the payload includes a C#
 | `GetFileInformationByHandle` | `Get-FileHardLinkCountSafe` | Query `nNumberOfLinks`. Detects NTFS hardlinks (`nNumberOfLinks > 1`) and prevents link breakage. |
 | `GetFileInformationByHandleEx` | `Test-DirectoryCaseSensitiveSafe` | Query `FileCaseSensitiveInfo` (Flags: `FILE_CS_FLAG_CASE_SENSITIVE_DIR`). Rejects case-sensitive directories. |
 | `FindFirstStreamW` / `FindNextStreamW` / `FindClose` | `Test-FileAlternateDataStreamsSafe` | Enumerate all named streams. Rejects files with non-standard NTFS Alternate Data Streams (`:StreamName:$DATA`). |
-| `GetFinalPathNameByHandleW` | `Resolve-Win32CanonicalPath` | Resolves canonical, absolute Win32 path, eliminating short-name (8.3) aliases, trailing separators, and relative path anomalies. |
+| `GetLongPathNameW` | `Resolve-Win32CanonicalPath` | Resolves 8.3 short-name components in a Win32 path to their long-name equivalents, normalizing short-path aliases while preserving the full absolute path. |
 | `CreateDirectoryW` | `New-Win32ExclusiveDirectory` | Atomically creates directory with error code 183 (`ERROR_ALREADY_EXISTS`) check, eliminating TOCTOU race conditions. |
+
+Win32 Helper R1 adds a PowerShell helper layer above the P/Invoke declarations: directory handle acquisition with specific desired-access/share/flag contracts (`FILE_LIST_DIRECTORY` or `DELETE` plus `FILE_FLAG_BACKUP_SEMANTICS`), filesystem object identity retrieval via `GetFileInformationByHandle` (volume serial number plus file index tuple), path-to-identity binding verification, and handle-based atomic rename via `SetFileInformationByHandle` / `FileRenameInfo`. Deterministic handle disposal is provided by `Close-DirectoryHandleOnce`. This helper capability is present in the current committed source; full APPLY Case A/B integration using this layer is not yet implemented in the current committed source.
 
 ---
 

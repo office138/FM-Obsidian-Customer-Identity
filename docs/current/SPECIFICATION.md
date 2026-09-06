@@ -57,6 +57,28 @@ Customer Folder Merge operates strictly under a decoupled, two-phase request mod
   - PLAN is **customer-data non-mutating**: it does not modify customer folders, managed notes, or customer content.
   - PLAN is **not filesystem-write-free**: it creates and uses the per-vault transaction/concurrency infrastructure under VaultRoot, including `.fm-obsidian-bridge-transactions` directory and `ACTIVE.lock` as required.
 
+### 3.1.1 PLAN Matched-Folder Count Contract (`Invoke-PlanCustomerFolderMerge`)
+
+The PLAN phase returns different terminal results depending on the number of folders matched for the target `pk_CLIENT`:
+
+| Matched Folders | Status | Code | Notes |
+|---|---|---|---|
+| **0** | `NG` | `CUSTOMER_NOT_FOUND` | Surfaced through topology error handling. No plan, no `planToken`, no mutation. |
+| **1** | `OK` | `MERGE_NOT_REQUIRED` | Early terminal result. No merge necessary; no plan or `planToken` is returned. |
+| **2 or more** | `OK` | `MERGE_PLAN_READY` | Continues through full plan construction: canonical destination state, managed-note evaluation, `DUPLICATE_NOTE_TYPE` protections, plan construction, and Token V3 generation. |
+
+**Single-folder response fields** (`matchedFolders.Count == 1`):
+- `status`: `OK`
+- `code`: `MERGE_NOT_REQUIRED`
+- `matchedFolderCount`: `1`
+- `updatedFiles`: `0`
+- `folderRenamed`: `false`
+- Fields `plan`, `planToken`, and `mergedNotesCount` are **not present** in this response.
+
+> [!IMPORTANT]
+> The single-folder early-return (`MERGE_NOT_REQUIRED`) is implemented and independently closed in the **PLAN phase only** (`PLAN C-1`, committed at `df8b4791`).
+> The corresponding APPLY-phase single-folder path (`APPLY C-2`) is **not present in the current committed source** and is not current canonical behavior.
+
 ### 3.2 APPLY Phase (`APPLY_CUSTOMER_FOLDER_MERGE`)
 - Requires an explicit, non-empty `planToken` provided in the payload.
 - Acquires exclusive per-vault transaction lock (`ACTIVE.lock`).
@@ -124,7 +146,8 @@ These two codes are distinct in production and must not be conflated into a sing
 ### 6.1 Top-Level Response Codes (`New-MergeResponse`)
 
 #### Success (`Status: "OK"`)
-- `MERGE_PLAN_READY`: Merge plan generated successfully with bound `planToken` and proposed file moves.
+- `MERGE_PLAN_READY`: Merge plan generated successfully with bound `planToken` and proposed file moves (PLAN phase, 2+ matched folders).
+- `MERGE_NOT_REQUIRED`: PLAN phase determined exactly 1 folder matches the target `pk_CLIENT`; no merge is necessary. Returns `matchedFolderCount = 1`, `updatedFiles = 0`, `folderRenamed = false`. No `plan`, `planToken`, or `mergedNotesCount` is present.
 - `MERGE_COMPLETED`: Merge operation successfully verified, committed, and finalized.
 
 #### Error (`Status: "NG"`)
