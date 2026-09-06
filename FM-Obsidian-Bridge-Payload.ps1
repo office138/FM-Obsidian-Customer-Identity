@@ -1457,6 +1457,63 @@ public static class Win32NativeMergeHelper {
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     public static extern bool CloseHandle(IntPtr hObject);
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    public struct FILE_RENAME_INFO {
+        [MarshalAs(UnmanagedType.U1)]
+        public bool ReplaceIfExists;
+        public IntPtr RootDirectory;
+        public uint FileNameLength;
+        public char FileName;
+    }
+
+    public const uint DELETE = 0x00010000;
+    public const uint FILE_LIST_DIRECTORY = 0x00000001;
+    public const int FileRenameInfo = 3;
+    public static readonly IntPtr INVALID_HANDLE_VALUE = new IntPtr(-1);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static extern bool SetFileInformationByHandle(
+        IntPtr hFile,
+        int FileInformationClass,
+        IntPtr lpFileInformation,
+        uint dwBufferSize
+    );
+
+    public static bool RenameDirectory(IntPtr hFile, string newPath, bool replaceIfExists, out int win32Error)
+    {
+        win32Error = 0;
+        string pathWithNull = newPath + "\0";
+        byte[] nameBytes = Encoding.Unicode.GetBytes(pathWithNull);
+        uint nameLenWithoutNull = (uint)Encoding.Unicode.GetByteCount(newPath);
+
+        int offsetFileName = (IntPtr.Size == 8) ? 20 : 12;
+        int offsetLen = (IntPtr.Size == 8) ? 16 : 8;
+
+        int totalSize = offsetFileName + nameBytes.Length + 16;
+        IntPtr pBuf = Marshal.AllocHGlobal(totalSize);
+
+        try
+        {
+            for (int i = 0; i < totalSize; i++) Marshal.WriteByte(pBuf, i, 0);
+
+            Marshal.WriteByte(pBuf, 0, (byte)(replaceIfExists ? 1 : 0));
+            Marshal.WriteInt32(pBuf, offsetLen, (int)nameLenWithoutNull);
+            Marshal.Copy(nameBytes, 0, new IntPtr(pBuf.ToInt64() + offsetFileName), nameBytes.Length);
+
+            bool ok = SetFileInformationByHandle(hFile, FileRenameInfo, pBuf, (uint)(offsetFileName + nameBytes.Length));
+            if (!ok)
+            {
+                win32Error = Marshal.GetLastWin32Error();
+            }
+            return ok;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pBuf);
+        }
+    }
 }
 "@
 }
@@ -1736,6 +1793,289 @@ function Get-FileSha256Raw {
   $sha = [System.Security.Cryptography.SHA256]::Create()
   $hashBytes = $sha.ComputeHash($bytes)
   return [BitConverter]::ToString($hashBytes).Replace("-", "").ToUpperInvariant()
+}
+
+function Open-CanonicalDirectoryGuard {
+  param(
+    [string]$DirectoryPath,
+    [string]$OpaqueTestHandleId = 'CASEA-GUARD-DEFAULT'
+  )
+  if ([string]::IsNullOrWhiteSpace($DirectoryPath)) {
+    return [PSCustomObject]@{
+      OpaqueTestHandleId = $OpaqueTestHandleId
+      IsValid            = $false
+      Win32Error         = 87 # ERROR_INVALID_PARAMETER
+      DesiredAccess      = 'FILE_LIST_DIRECTORY'
+      ShareMode          = 'FILE_SHARE_READ | FILE_SHARE_WRITE'
+      CloseCount         = 0
+      NativeHandle       = [Win32NativeMergeHelper]::INVALID_HANDLE_VALUE
+    }
+  }
+
+  $desiredAccess = [Win32NativeMergeHelper]::FILE_LIST_DIRECTORY
+  $shareMode = [Win32NativeMergeHelper]::FILE_SHARE_READ -bor [Win32NativeMergeHelper]::FILE_SHARE_WRITE
+  $creationDisp = [Win32NativeMergeHelper]::OPEN_EXISTING
+  $flagsAndAttrs = [Win32NativeMergeHelper]::FILE_FLAG_BACKUP_SEMANTICS
+  $nullPtr = [IntPtr]::Zero
+
+  $handle = [Win32NativeMergeHelper]::CreateFile(
+    $DirectoryPath,
+    $desiredAccess,
+    $shareMode,
+    $nullPtr,
+    $creationDisp,
+    $flagsAndAttrs,
+    $nullPtr
+  )
+
+  $isValid = ($handle -ne [Win32NativeMergeHelper]::INVALID_HANDLE_VALUE -and $handle -ne [IntPtr]::Zero)
+  $win32Error = if ($isValid) { 0 } else { [System.Runtime.InteropServices.Marshal]::GetLastWin32Error() }
+
+  return [PSCustomObject]@{
+    OpaqueTestHandleId = $OpaqueTestHandleId
+    IsValid            = $isValid
+    Win32Error         = $win32Error
+    DesiredAccess      = 'FILE_LIST_DIRECTORY'
+    ShareMode          = 'FILE_SHARE_READ | FILE_SHARE_WRITE'
+    CloseCount         = 0
+    NativeHandle       = $handle
+  }
+}
+
+function Open-StagingDirectoryContinuityHandle {
+  param(
+    [string]$DirectoryPath,
+    [string]$OpaqueTestHandleId = 'CASEB-CONTINUITY-DEFAULT'
+  )
+  if ([string]::IsNullOrWhiteSpace($DirectoryPath)) {
+    return [PSCustomObject]@{
+      OpaqueTestHandleId = $OpaqueTestHandleId
+      IsValid            = $false
+      Win32Error         = 87 # ERROR_INVALID_PARAMETER
+      DesiredAccess      = 'DELETE'
+      ShareMode          = 'FILE_SHARE_READ | FILE_SHARE_WRITE'
+      CloseCount         = 0
+      NativeHandle       = [Win32NativeMergeHelper]::INVALID_HANDLE_VALUE
+    }
+  }
+
+  $desiredAccess = [Win32NativeMergeHelper]::DELETE
+  $shareMode = [Win32NativeMergeHelper]::FILE_SHARE_READ -bor [Win32NativeMergeHelper]::FILE_SHARE_WRITE
+  $creationDisp = [Win32NativeMergeHelper]::OPEN_EXISTING
+  $flagsAndAttrs = [Win32NativeMergeHelper]::FILE_FLAG_BACKUP_SEMANTICS
+  $nullPtr = [IntPtr]::Zero
+
+  $handle = [Win32NativeMergeHelper]::CreateFile(
+    $DirectoryPath,
+    $desiredAccess,
+    $shareMode,
+    $nullPtr,
+    $creationDisp,
+    $flagsAndAttrs,
+    $nullPtr
+  )
+
+  $isValid = ($handle -ne [Win32NativeMergeHelper]::INVALID_HANDLE_VALUE -and $handle -ne [IntPtr]::Zero)
+  $win32Error = if ($isValid) { 0 } else { [System.Runtime.InteropServices.Marshal]::GetLastWin32Error() }
+
+  return [PSCustomObject]@{
+    OpaqueTestHandleId = $OpaqueTestHandleId
+    IsValid            = $isValid
+    Win32Error         = $win32Error
+    DesiredAccess      = 'DELETE'
+    ShareMode          = 'FILE_SHARE_READ | FILE_SHARE_WRITE'
+    CloseCount         = 0
+    NativeHandle       = $handle
+  }
+}
+
+function Open-RecoveryStagingDirectoryGuard {
+  param(
+    [string]$DirectoryPath,
+    [string]$OpaqueTestHandleId = 'RECOVERY-GUARD-DEFAULT'
+  )
+  if ([string]::IsNullOrWhiteSpace($DirectoryPath)) {
+    return [PSCustomObject]@{
+      OpaqueTestHandleId = $OpaqueTestHandleId
+      IsValid            = $false
+      Win32Error         = 87 # ERROR_INVALID_PARAMETER
+      DesiredAccess      = 'DELETE | FILE_READ_ATTRIBUTES'
+      ShareMode          = 'FILE_SHARE_READ | FILE_SHARE_WRITE'
+      CloseCount         = 0
+      NativeHandle       = [Win32NativeMergeHelper]::INVALID_HANDLE_VALUE
+    }
+  }
+
+  $desiredAccess = [Win32NativeMergeHelper]::DELETE -bor [Win32NativeMergeHelper]::FILE_READ_ATTRIBUTES
+  $shareMode = [Win32NativeMergeHelper]::FILE_SHARE_READ -bor [Win32NativeMergeHelper]::FILE_SHARE_WRITE
+  $creationDisp = [Win32NativeMergeHelper]::OPEN_EXISTING
+  $flagsAndAttrs = [Win32NativeMergeHelper]::FILE_FLAG_BACKUP_SEMANTICS
+  $nullPtr = [IntPtr]::Zero
+
+  $handle = [Win32NativeMergeHelper]::CreateFile(
+    $DirectoryPath,
+    $desiredAccess,
+    $shareMode,
+    $nullPtr,
+    $creationDisp,
+    $flagsAndAttrs,
+    $nullPtr
+  )
+
+  $isValid = ($handle -ne [Win32NativeMergeHelper]::INVALID_HANDLE_VALUE -and $handle -ne [IntPtr]::Zero)
+  $win32Error = if ($isValid) { 0 } else { [System.Runtime.InteropServices.Marshal]::GetLastWin32Error() }
+
+  return [PSCustomObject]@{
+    OpaqueTestHandleId = $OpaqueTestHandleId
+    IsValid            = $isValid
+    Win32Error         = $win32Error
+    DesiredAccess      = 'DELETE | FILE_READ_ATTRIBUTES'
+    ShareMode          = 'FILE_SHARE_READ | FILE_SHARE_WRITE'
+    CloseCount         = 0
+    NativeHandle       = $handle
+  }
+}
+
+function Get-DirectoryObjectIdentity {
+  param($HandleWrapper)
+  if ($null -eq $HandleWrapper) { return $null }
+  if ($HandleWrapper -is [System.Management.Automation.PSReference]) {
+    $HandleWrapper = $HandleWrapper.Value
+  }
+  if ($null -eq $HandleWrapper) { return $null }
+
+  $rawHandle = if ($HandleWrapper -is [System.IntPtr]) {
+    $HandleWrapper
+  } elseif ($null -ne $HandleWrapper.PSObject.Properties['NativeHandle']) {
+    $HandleWrapper.NativeHandle
+  } else {
+    [IntPtr]::Zero
+  }
+
+  if ($null -eq $rawHandle -or $rawHandle -eq [IntPtr]::Zero -or $rawHandle -eq [Win32NativeMergeHelper]::INVALID_HANDLE_VALUE) {
+    return $null
+  }
+
+  $info = New-Object Win32NativeMergeHelper+BY_HANDLE_FILE_INFORMATION
+  $ok = [Win32NativeMergeHelper]::GetFileInformationByHandle($rawHandle, [ref]$info)
+  if (-not $ok) {
+    return $null
+  }
+
+  return [PSCustomObject]@{
+    VolumeSerialNumber = [uint32]$info.dwVolumeSerialNumber
+    FileIndexHigh      = [uint32]$info.nFileIndexHigh
+    FileIndexLow       = [uint32]$info.nFileIndexLow
+    VolumeSerialHex    = $info.dwVolumeSerialNumber.ToString('X8')
+    FileIndexHighHex   = $info.nFileIndexHigh.ToString('X8')
+    FileIndexLowHex    = $info.nFileIndexLow.ToString('X8')
+    FileIdString       = "$($info.dwVolumeSerialNumber.ToString('X8'))-$($info.nFileIndexHigh.ToString('X8'))-$($info.nFileIndexLow.ToString('X8'))"
+  }
+}
+
+function Test-DirectoryPathBinding {
+  param(
+    [string]$DirectoryPath,
+    $ExpectedIdentity
+  )
+  if ([string]::IsNullOrWhiteSpace($DirectoryPath) -or $null -eq $ExpectedIdentity) {
+    return $false
+  }
+  if ($null -eq $ExpectedIdentity.VolumeSerialNumber -or
+      $null -eq $ExpectedIdentity.FileIndexHigh -or
+      $null -eq $ExpectedIdentity.FileIndexLow) {
+    return $false
+  }
+
+  $desiredAccess = [Win32NativeMergeHelper]::FILE_READ_ATTRIBUTES
+  $shareMode = [Win32NativeMergeHelper]::FILE_SHARE_READ -bor [Win32NativeMergeHelper]::FILE_SHARE_WRITE -bor [Win32NativeMergeHelper]::FILE_SHARE_DELETE
+  $creationDisp = [Win32NativeMergeHelper]::OPEN_EXISTING
+  $flagsAndAttrs = [Win32NativeMergeHelper]::FILE_FLAG_BACKUP_SEMANTICS
+  $nullPtr = [IntPtr]::Zero
+
+  $handle = [Win32NativeMergeHelper]::CreateFile(
+    $DirectoryPath,
+    $desiredAccess,
+    $shareMode,
+    $nullPtr,
+    $creationDisp,
+    $flagsAndAttrs,
+    $nullPtr
+  )
+
+  if ($handle -eq [Win32NativeMergeHelper]::INVALID_HANDLE_VALUE -or $handle -eq [IntPtr]::Zero) {
+    return $false
+  }
+
+  try {
+    $actualIdentity = Get-DirectoryObjectIdentity -HandleWrapper $handle
+    if ($null -eq $actualIdentity) {
+      return $false
+    }
+    $match = ($actualIdentity.VolumeSerialNumber -eq [uint32]$ExpectedIdentity.VolumeSerialNumber) -and
+             ($actualIdentity.FileIndexHigh -eq [uint32]$ExpectedIdentity.FileIndexHigh) -and
+             ($actualIdentity.FileIndexLow -eq [uint32]$ExpectedIdentity.FileIndexLow)
+    return $match
+  }
+  finally {
+    [void][Win32NativeMergeHelper]::CloseHandle($handle)
+  }
+}
+
+function Invoke-DirectoryRenameByHandle {
+  param(
+    $HandleWrapper,
+    [string]$NewPath,
+    [bool]$ReplaceIfExists = $false
+  )
+  if ($HandleWrapper -is [System.Management.Automation.PSReference]) {
+    $HandleWrapper = $HandleWrapper.Value
+  }
+  $rawHandle = if ($HandleWrapper -is [System.IntPtr]) {
+    $HandleWrapper
+  } elseif ($null -ne $HandleWrapper -and $null -ne $HandleWrapper.PSObject.Properties['NativeHandle']) {
+    $HandleWrapper.NativeHandle
+  } else {
+    [IntPtr]::Zero
+  }
+
+  if ($rawHandle -eq [IntPtr]::Zero -or $rawHandle -eq [Win32NativeMergeHelper]::INVALID_HANDLE_VALUE) {
+    return [PSCustomObject]@{
+      Success    = $false
+      Win32Error = 6 # ERROR_INVALID_HANDLE
+    }
+  }
+
+  $err = 0
+  # Strictly force ReplaceIfExists = $false (fail-closed, no overwrite, no fallback)
+  $success = [Win32NativeMergeHelper]::RenameDirectory($rawHandle, $NewPath, $false, [ref]$err)
+  return [PSCustomObject]@{
+    Success    = [bool]$success
+    Win32Error = [int]$err
+  }
+}
+
+function Close-DirectoryHandleOnce {
+  param($HandleWrapper)
+  if ($null -eq $HandleWrapper) { return }
+  if ($HandleWrapper -is [System.Management.Automation.PSReference]) {
+    $HandleWrapper = $HandleWrapper.Value
+  }
+  if ($null -eq $HandleWrapper) { return }
+
+  if ($HandleWrapper -is [System.IntPtr]) {
+    return
+  }
+
+  if ($HandleWrapper.PSObject.Properties['NativeHandle']) {
+    $rawHandle = $HandleWrapper.NativeHandle
+    if ($rawHandle -ne [IntPtr]::Zero -and $rawHandle -ne [Win32NativeMergeHelper]::INVALID_HANDLE_VALUE) {
+      $HandleWrapper.NativeHandle = [IntPtr]::Zero
+      $HandleWrapper.IsValid = $false
+      $HandleWrapper.CloseCount = [int]$HandleWrapper.CloseCount + 1
+      [void][Win32NativeMergeHelper]::CloseHandle($rawHandle)
+    }
+  }
 }
 
 function New-MergePlanTokenV3 {
@@ -2821,6 +3161,11 @@ function Invoke-PlanCustomerFolderMerge {
     $topo = Get-CustomerMergeTopology $vaultRoot $uuid $nameRaw
     if ($null -ne $topo.Error) {
       Write-Output (New-MergeResponse $reqId "NG" $topo.Error $topo.Details)
+      return
+    }
+
+    if ($topo.MatchedFolders.Count -eq 1) {
+      Write-Output (New-MergeResponse $reqId "OK" "MERGE_NOT_REQUIRED" "マージ対象フォルダが1件のみのため、統合は不要です。" -Extra @{ matchedFolderCount = 1 })
       return
     }
 
