@@ -3387,6 +3387,11 @@ function Invoke-ApplyCustomerFolderMerge {
       return
     }
 
+    if ($topo.MatchedFolders.Count -eq 1) {
+      Write-Output (New-MergeResponse $reqId "OK" "MERGE_NOT_REQUIRED" "マージ対象フォルダが1件のみのため、統合は不要です。" -Extra @{ matchedFolderCount = 1 })
+      return
+    }
+
     $canonicalState = Resolve-CanonicalDestinationState $topo
     if ($canonicalState -eq "UNOWNED_DIRECTORY") {
       Write-Output (New-MergeResponse $reqId "NG" "CANONICAL_FOLDER_NO_UUID_EVIDENCE" "canonicalフォルダ '$($topo.CanonicalFolderName)' が存在しますが、対象UUIDの証拠を持たないため統合を実行できません。")

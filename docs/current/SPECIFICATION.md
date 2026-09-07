@@ -76,8 +76,15 @@ The PLAN phase returns different terminal results depending on the number of fol
 - Fields `plan`, `planToken`, and `mergedNotesCount` are **not present** in this response.
 
 > [!IMPORTANT]
-> The single-folder early-return (`MERGE_NOT_REQUIRED`) is implemented and independently closed in the **PLAN phase only** (`PLAN C-1`, committed at `df8b4791`).
-> The corresponding APPLY-phase single-folder path (`APPLY C-2`) is **not present in the current committed source** and is not current canonical behavior.
+> The single-folder early-return (`MERGE_NOT_REQUIRED`) is implemented and closed in both the **PLAN phase** (`PLAN C-1`, committed at `df8b4791`) and the **APPLY phase** (`APPLY C-2`, current canonical source).
+>
+> **APPLY Matched-Folder Count Contract** (`Invoke-ApplyCustomerFolderMerge`):
+> - **Count 0**: `NG` / `CUSTOMER_NOT_FOUND` (surfaced through fresh topology error handling). No live token comparison, no transaction preparation, and no customer data mutation.
+> - **Count 1**: `OK` / `MERGE_NOT_REQUIRED` (terminal no-op early return). Required response properties: `status = "OK"`, `code = "MERGE_NOT_REQUIRED"`, `matchedFolderCount = 1`, `updatedFiles = 0`, `folderRenamed = false`, `requestId = incoming requestId`, and `userMessage = "マージ対象フォルダが1件のみのため、統合は不要です。"`. Does **not** emit `plan`, `planToken`, or `mergedNotesCount`. This branch is terminal before the J-2 canonical resolver, managed-note re-collection, Token V3 calculation, live token comparison, transaction preparation, and mutation.
+> - **Count 2 or more**: Continues to J-2 Step 6 (`Resolve-CanonicalDestinationState`) and the remaining existing APPLY sequence.
+>
+> **Stale-Token Precedence**:
+> If PLAN previously generated a multi-folder `planToken`, but fresh APPLY topology now contains exactly one matching folder, APPLY returns `OK` / `MERGE_NOT_REQUIRED` and does **not** return `PLAN_TOKEN_MISMATCH`. The fresh count-one no-op terminal condition has strict precedence over live token comparison. Prior folder count from PLAN is never trusted.
 
 ### 3.1.2 Canonical Destination Resolver & Terminal Contract
 
@@ -95,8 +102,8 @@ Prior to managed-note evaluation and token generation, both PLAN and APPLY evalu
 For terminal states (`UNOWNED_DIRECTORY`, `NON_DIRECTORY_OCCUPANT`, `INSPECTION_FAILED`), execution terminates immediately and never proceeds further:
 - **PLAN Ordering Invariant**: `planOneFolderIdx < planResolverAssignIdx < planBranchIdx < planManagedNotesIdx`.  
   Terminal branches exit before managed-note processing, duplicate note type detection, and `New-MergePlanTokenV3` plan-token generation.
-- **APPLY Ordering Invariant**: `topoErrIdx < applyResolverAssignIdx < branchIdx < managedNotesIdx < tokenV3Idx < txPrepIdx`.  
-  Terminal branches exit before managed-note processing, duplicate collision detection, live `New-MergePlanTokenV3` calculation, transaction preparation (`inprogress.json`), staging directory creation, journal creation, or customer data mutation.
+- **APPLY Ordering Invariant**: `topoErrIdx < c2Idx < applyResolverAssignIdx < branchIdx < managedNotesIdx < tokenV3Idx < txPrepIdx`.  
+  `c2Idx` represents the APPLY C-2 matched-folder count-one terminal handling (`MERGE_NOT_REQUIRED`). Terminal branches exit before managed-note processing, duplicate collision detection, live `New-MergePlanTokenV3` calculation, transaction preparation (`inprogress.json`), staging directory creation, journal creation, or customer data mutation.
 
 #### Phase-2 Case A / Case B State Fixation
 The Phase-2 mutation disposition is fixed exclusively by the Step 6 resolver state:
@@ -108,9 +115,12 @@ The former late `Test-Path -LiteralPath $targetCanonicalDir` Case A/B selector h
 ### 3.2 APPLY Phase (`APPLY_CUSTOMER_FOLDER_MERGE`)
 - Requires an explicit, non-empty `planToken` provided in the payload.
 - Acquires exclusive per-vault transaction lock (`ACTIVE.lock`).
-- Re-scans current filesystem topology and recomputes the live plan token.
-- Compares requested `planToken` against the live recomputed token. If any mismatch occurs, execution immediately rejects with `PLAN_TOKEN_MISMATCH`.
+- Re-scans current filesystem topology via `Get-CustomerMergeTopology`.
+- If topology error occurs, immediately terminates fail-closed (e.g. `CUSTOMER_NOT_FOUND` on 0 matched folders).
+- If fresh `MatchedFolders.Count -eq 1`, immediately returns terminal `OK` / `MERGE_NOT_REQUIRED` (`matchedFolderCount = 1`, `updatedFiles = 0`, `folderRenamed = false`). Stale multi-folder tokens do not trigger `PLAN_TOKEN_MISMATCH` (stale-token precedence).
+- If fresh `MatchedFolders.Count >= 2`, evaluates canonical destination path state via `Resolve-CanonicalDestinationState` (J-2 Step 6) and dispatches terminal errors (`CANONICAL_FOLDER_NO_UUID_EVIDENCE`, `MERGE_CANONICAL_PATH_OCCUPIED`, `MERGE_TOPOLOGY_ENUMERATION_FAILED`).
 - Re-verifies managed note types across candidate folders. If collision occurs, rejects with `NOTE_TYPE_COLLISION`.
+- Recomputes live `New-MergePlanTokenV3` and validates requested `planToken` against live token (`PLAN_TOKEN_MISMATCH`).
 - Executes atomic file migration through exclusive staging (`staging_<TxId>`) and durable journal tracking (`<TxId>.journal.json`).
 - Executes **final topology verification** against the post-merge vault structure while still pre-commit. If verification fails, an exception is thrown and the operation enters the rollback engine.
 - Only upon successful final verification is the commit marker written (`committed.json`, `$isCommitted = $true`).
@@ -173,7 +183,7 @@ These two codes are distinct in production and must not be conflated into a sing
 
 #### Success (`Status: "OK"`)
 - `MERGE_PLAN_READY`: Merge plan generated successfully with bound `planToken` and proposed file moves (PLAN phase, 2+ matched folders).
-- `MERGE_NOT_REQUIRED`: PLAN phase determined exactly 1 folder matches the target `pk_CLIENT`; no merge is necessary. Returns `matchedFolderCount = 1`, `updatedFiles = 0`, `folderRenamed = false`. No `plan`, `planToken`, or `mergedNotesCount` is present.
+- `MERGE_NOT_REQUIRED`: PLAN or APPLY phase determined exactly 1 folder matches the target `pk_CLIENT`; no merge is necessary. In both phases, returns `matchedFolderCount = 1`, `updatedFiles = 0`, `folderRenamed = false`. Fields `plan`, `planToken`, and `mergedNotesCount` are not present. In APPLY, this terminal no-op takes precedence over live token validation (stale-token precedence).
 - `MERGE_COMPLETED`: Merge operation successfully verified, committed, and finalized.
 
 #### Error (`Status: "NG"`)

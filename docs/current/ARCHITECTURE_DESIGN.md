@@ -79,10 +79,13 @@ Requests arrive as a Base64-encoded JSON payload either via `-PayloadB64` or `-P
 2. `APPLY_CUSTOMER_FOLDER_MERGE` -> `Invoke-ApplyCustomerFolderMerge`:
    - Acquires exclusive per-vault transaction lock (`ACTIVE.lock`).
    - Scans customer root `01_顧客` via `Get-CustomerMergeTopology`.
-   - Resolves canonical destination state via `Resolve-CanonicalDestinationState $topo`. On terminal states (`UNOWNED_DIRECTORY` -> `CANONICAL_FOLDER_NO_UUID_EVIDENCE`, `NON_DIRECTORY_OCCUPANT` -> `MERGE_CANONICAL_PATH_OCCUPIED`, `INSPECTION_FAILED` -> `MERGE_TOPOLOGY_ENUMERATION_FAILED`), returns immediately.
+   - Evaluates topology error handling: on 0 matched folders, returns terminal `NG` / `CUSTOMER_NOT_FOUND`.
+   - Evaluates fresh `MatchedFolders.Count`: on exactly 1 matched folder, returns terminal `OK` / `MERGE_NOT_REQUIRED` (`matchedFolderCount = 1`, `updatedFiles = 0`, `folderRenamed = false`). When only one matching folder remains, there is no merge operation to perform, so the function returns the idempotent no-op before canonical merge-destination evaluation.
+   - Stale-token precedence: if PLAN previously generated a multi-folder `planToken`, but fresh APPLY topology now contains exactly one matching folder, APPLY returns `OK` / `MERGE_NOT_REQUIRED` and does not return `PLAN_TOKEN_MISMATCH`. The fresh count-one no-op terminal condition has precedence over live token comparison.
+   - On 2+ matched folders, resolves canonical destination state via `Resolve-CanonicalDestinationState $topo`. On terminal states (`UNOWNED_DIRECTORY` -> `CANONICAL_FOLDER_NO_UUID_EVIDENCE`, `NON_DIRECTORY_OCCUPANT` -> `MERGE_CANONICAL_PATH_OCCUPIED`, `INSPECTION_FAILED` -> `MERGE_TOPOLOGY_ENUMERATION_FAILED`), returns immediately.
    - Evaluates managed notes and detects cross-folder `NOTE_TYPE_COLLISION`.
    - Recomputes live `New-MergePlanTokenV3` and validates requested `planToken` against live token (`PLAN_TOKEN_MISMATCH`).
-   - Symbolic ordering invariant: `topoErrIdx < applyResolverAssignIdx < branchIdx < managedNotesIdx < tokenV3Idx < txPrepIdx`. Terminal states never reach Token V3 recomputation, transaction preparation, staging, or mutation.
+   - Symbolic ordering invariant: `topoErrIdx < c2Idx < applyResolverAssignIdx < branchIdx < managedNotesIdx < tokenV3Idx < txPrepIdx`. `c2Idx` represents the APPLY C-2 matched-folder count-one terminal handling (`MERGE_NOT_REQUIRED`). Terminal states never reach Token V3 recomputation, transaction preparation, staging, or mutation.
    - Writes transaction inprogress evidence (`.inprogress.json`).
    - Creates staging directory via `New-MergeStagingOwnershipSafe`.
    - Writes durable transaction journal via `Write-JournalEvidenceSafe`.
