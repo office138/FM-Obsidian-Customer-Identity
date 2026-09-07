@@ -41,6 +41,7 @@ Customer Folder Merge operates strictly under a decoupled, two-phase request mod
                 |
                 v
              Acquire Lock -> Validate PlanToken (live recomputed match) ->
+             Target Occupancy Preflight -> Transaction Preparation (inprogress.json) ->
              Exclusive Staging -> Durable Journal -> Atomic Migration ->
              Final Topology Verification -> Commit Marker (committed.json) ->
              Post-Commit Cleanup -> Release Lock -> Return Result
@@ -102,8 +103,8 @@ Prior to managed-note evaluation and token generation, both PLAN and APPLY evalu
 For terminal states (`UNOWNED_DIRECTORY`, `NON_DIRECTORY_OCCUPANT`, `INSPECTION_FAILED`), execution terminates immediately and never proceeds further:
 - **PLAN Ordering Invariant**: `planOneFolderIdx < planResolverAssignIdx < planBranchIdx < planManagedNotesIdx`.  
   Terminal branches exit before managed-note processing, duplicate note type detection, and `New-MergePlanTokenV3` plan-token generation.
-- **APPLY Ordering Invariant**: `topoErrIdx < c2Idx < applyResolverAssignIdx < branchIdx < managedNotesIdx < tokenV3Idx < txPrepIdx`.  
-  `c2Idx` represents the APPLY C-2 matched-folder count-one terminal handling (`MERGE_NOT_REQUIRED`). Terminal branches exit before managed-note processing, duplicate collision detection, live `New-MergePlanTokenV3` calculation, transaction preparation (`inprogress.json`), staging directory creation, journal creation, or customer data mutation.
+- **APPLY Ordering Invariant**: `topoErrIdx < c2Idx < applyResolverAssignIdx < branchIdx < managedNotesIdx < tokenV3Idx < tokenMismatchIdx < step11PreflightIdx < txPrepIdx`.  
+  `c2Idx` represents the APPLY C-2 matched-folder count-one terminal handling (`MERGE_NOT_REQUIRED`). `managedNotesIdx` includes managed-note recollection and `NOTE_TYPE_COLLISION` detection. `step11PreflightIdx` represents the J-2 Step 11 target occupancy preflight loop, and `txPrepIdx` represents `$inProgressData` / `.inprogress.json` creation. Terminal branches exit before subsequent processing, and any terminal exit safely releases `ACTIVE.lock`.
 
 #### Phase-2 Case A / Case B State Fixation
 The Phase-2 mutation disposition is fixed exclusively by the Step 6 resolver state:
@@ -121,11 +122,103 @@ The former late `Test-Path -LiteralPath $targetCanonicalDir` Case A/B selector h
 - If fresh `MatchedFolders.Count >= 2`, evaluates canonical destination path state via `Resolve-CanonicalDestinationState` (J-2 Step 6) and dispatches terminal errors (`CANONICAL_FOLDER_NO_UUID_EVIDENCE`, `MERGE_CANONICAL_PATH_OCCUPIED`, `MERGE_TOPOLOGY_ENUMERATION_FAILED`).
 - Re-verifies managed note types across candidate folders. If collision occurs, rejects with `NOTE_TYPE_COLLISION`.
 - Recomputes live `New-MergePlanTokenV3` and validates requested `planToken` against live token (`PLAN_TOKEN_MISMATCH`).
+- Executes live target occupancy preflight inspection for all managed notes (J-2 Step 11, `APPLY_ONLY`). If any canonical target path is occupied by an existing non-self object, returns terminal `NG` / `MERGE_TARGET_FILE_EXISTS`. If target path inspection fails unexpectedly, returns terminal `NG` / `MERGE_OPERATION_FAILED`. Normal APPLY continues only when target paths are `ABSENT` or `SELF_SOURCE`.
+- Prepares transaction record (`$inProgressData` / `.inprogress.json`).
 - Executes atomic file migration through exclusive staging (`staging_<TxId>`) and durable journal tracking (`<TxId>.journal.json`).
 - Executes **final topology verification** against the post-merge vault structure while still pre-commit. If verification fails, an exception is thrown and the operation enters the rollback engine.
 - Only upon successful final verification is the commit marker written (`committed.json`, `$isCommitted = $true`).
 - Completes best-effort post-commit cleanup (ownership marker and transaction evidence).
 - Releases transaction lock and returns `MERGE_COMPLETED`.
+
+### 3.2.1 Live Target Occupancy Preflight Contract (J-2 Step 11, `APPLY_ONLY`)
+
+Prior to transaction preparation and customer mutation, the APPLY phase performs a structured preflight check verifying that no file or filesystem object collision exists at the canonical destination for any managed note:
+
+#### Scope & Pipeline Isolation
+- `MERGE_TARGET_FILE_EXISTS` is strictly an **`APPLY_ONLY`** response code.
+- It **MUST NOT** be emitted as a PLAN response under any circumstance. The PLAN pipeline does not perform the Step-11 per-managed-note target occupancy preflight and does not emit `MERGE_TARGET_FILE_EXISTS`. This does not alter the existing J-2 Step-6 PLAN canonical-destination-state evaluation.
+
+#### Relative APPLY Precedence
+Within `Invoke-ApplyCustomerFolderMerge`, checks execute in the following strict bounded order:
+1. Fresh topology enumeration (`Get-CustomerMergeTopology`)
+2. Topology error handling (`CUSTOMER_NOT_FOUND`, etc.)
+3. C-2 matched-folder-count handling (`MERGE_NOT_REQUIRED` on count = 1)
+4. J-2 canonical destination state handling (`Resolve-CanonicalDestinationState` terminal states)
+5. Managed-note recollection (`$allManagedNotes`)
+6. `NOTE_TYPE_COLLISION` cross-folder detection
+7. Live Token V3 recomputation (`New-MergePlanTokenV3`)
+8. `PLAN_TOKEN_MISMATCH` live token validation
+9. J-2 Step 11 target occupancy preflight (`Resolve-MergeTargetOccupancyState` $\rightarrow$ `MERGE_TARGET_FILE_EXISTS`)
+10. Transaction preparation (`$inProgressData` / `.inprogress.json`)
+11. Exclusive staging and customer data mutation
+
+The J-2 Step 11 preflight executes strictly **after** `PLAN_TOKEN_MISMATCH` validation and strictly **before** transaction preparation.
+Consequently:
+- C-2 count-one `MERGE_NOT_REQUIRED` wins before Step 11.
+- J-2 canonical terminal responses (`CANONICAL_FOLDER_NO_UUID_EVIDENCE`, `MERGE_CANONICAL_PATH_OCCUPIED`, `MERGE_TOPOLOGY_ENUMERATION_FAILED`) win before Step 11.
+- `NOTE_TYPE_COLLISION` wins before Step 11.
+- `PLAN_TOKEN_MISMATCH` wins before Step 11.
+
+#### Live Target Derivation
+Target paths are derived dynamically in APPLY from live state:
+$$\text{targetPath} = \text{Join-Path } \$topo\text{.CanonicalFolderFullPath } \$n\text{.FileName}$$
+A PLAN-supplied target path is never authoritative; live canonical folder path plus live managed note filename governs.
+
+#### Self-Source Exemption
+A target path is exempt from collision detection and not considered occupied when target full path and source full path are equal under:
+```powershell
+[string]::Equals($TargetPath, $SourcePath, [System.StringComparison]::OrdinalIgnoreCase)
+```
+- Evaluation uses full absolute paths, not filename-only comparison.
+- String path equality is sufficient; filesystem object identity is not required.
+- When `SELF_SOURCE` is detected, inspection does not halt; processing continues.
+
+#### Occupancy Contract
+For any non-self target, an existing filesystem occupant constitutes a collision. The collision contract encompasses at least:
+- Unmanaged same-name file;
+- UUID-less same-name Markdown file;
+- Different-UUID same-name Markdown file;
+- Another existing managed-note occupant where applicable;
+- Same-name directory;
+- Any other filesystem occupant resolved by the inspection primitive.
+
+Collision handling is fail-closed and non-destructive:
+- No overwrite.
+- No delete.
+- No auto-adopt.
+- No UUID rewrite.
+- No automatic normalization to bypass the collision.
+
+#### Collision Response
+When an occupant is detected (`OCCUPIED`):
+- `status`: `NG`
+- `code`: `MERGE_TARGET_FILE_EXISTS`
+- `userMessage`: Non-empty and contains the actual inspected target path (`"マージ先に同名ファイルまたはオブジェクトが既に存在します: $targetPath"`).
+- `requestId`: Exact incoming request identifier.
+- `updatedFiles`: `0`
+- `folderRenamed`: `false`
+- No Step-11-specific extra diagnostic response fields are introduced.
+- Execution halts immediately before transaction preparation, staging, journal creation, or customer data mutation.
+- The transaction lock (`ACTIVE.lock`) is safely released before returning, consistent with all terminal responses.
+
+#### Inspection Failure
+If target path inspection fails for a reason other than absence (e.g. sharing violation, access denied, I/O error):
+- `status`: `NG`
+- `code`: `MERGE_OPERATION_FAILED`
+- `userMessage`: Non-empty and contains the inspected target path (`"マージ先パスの検査に失敗しました: $targetPath"`).
+- MUST NOT be documented or returned as `MERGE_TARGET_FILE_EXISTS`, `MERGE_TOPOLOGY_ENUMERATION_FAILED`, or `ABSENT`/pass-through.
+- An occupant is never falsely reported when inspection itself failed.
+- Execution terminates fail-closed prior to transaction preparation and customer mutation, releasing `ACTIVE.lock`.
+
+#### Absence / Self-Source Continuation
+When inspection yields `ABSENT` or `SELF_SOURCE`, the J-2 Step 11 preflight completes cleanly, and normal APPLY processing continues. If `$allManagedNotes` contains zero notes, the preflight loop executes zero iterations and processing continues to transaction preparation.
+
+#### TOCTOU Defense-in-Depth Preservation
+The J-2 Step 11 preflight is an early structured preflight only. It does **not** replace later generic collision/TOCTOU defenses during:
+- Source $\rightarrow$ staging migration (`throw "ステージングに同名ファイルが既に存在します: $dstPath"`)
+- Staging $\rightarrow$ canonical migration (`throw "最終Canonicalフォルダに同名ファイルが既に存在します: $finalFile"`)
+
+Those generic same-name collision throws remain fully preserved in the payload AST as defense-in-depth against concurrent filesystem modification.
 
 ### 3.3 Strict Governance Rules
 - **No Implicit Apply**: No merge mutation is ever executed without an explicit `APPLY_CUSTOMER_FOLDER_MERGE` action containing a verified `planToken`.
@@ -190,11 +283,12 @@ These two codes are distinct in production and must not be conflated into a sing
 - `INVALID_REQUEST`: Missing mandatory parameters (`VaultRoot`, `planToken`), invalid/unresolvable VaultRoot, or unexpected payload keys.
 - `INVALID_UUID_FORMAT`: `pk_CLIENT` parameter is not a valid canonical UUID format.
 - `MERGE_OPERATION_IN_PROGRESS`: Transaction lock contention (`ACTIVE.lock` held by another active bridge process).
-- `MERGE_OPERATION_FAILED`: Lock acquisition failed due to non-contention OS/filesystem error.
+- `MERGE_OPERATION_FAILED`: Lock acquisition failed due to non-contention OS/filesystem error, or target path inspection failed during J-2 Step 11 preflight (`userMessage` contains inspected target path).
 - `MERGE_RECOVERY_REQUIRED`: Unresolved `.inprogress.json` transaction marker exists from a prior incomplete transaction.
 - `CANONICAL_FOLDER_NO_UUID_EVIDENCE`: A folder matching canonical name exists on disk but contains no UUID evidence for target client.
 - `MERGE_CANONICAL_PATH_OCCUPIED`: The canonical destination path is occupied by a non-directory filesystem object, so merge planning/application stops fail-closed.
 - `PLAN_TOKEN_MISMATCH`: Requested `planToken` does not match live recomputed plan token.
+- `MERGE_TARGET_FILE_EXISTS`: Target path in canonical destination is already occupied by a non-self filesystem object (file, markdown note, directory, etc.) during APPLY live target occupancy preflight (`APPLY_ONLY`). Returns `status = "NG"`, `code = "MERGE_TARGET_FILE_EXISTS"`, `updatedFiles = 0`, `folderRenamed = false`, and non-empty `userMessage` containing the inspected target path. Terminates fail-closed prior to transaction preparation and customer mutation.
 - `DUPLICATE_NOTE_TYPE`: Multiple managed notes with the same `noteType` detected in candidate folder.
 - `NOTE_TYPE_COLLISION`: Colliding managed notes of same `noteType` found across merging candidate folders during APPLY.
 - `MERGE_FAILED_ROLLED_BACK`: Merge operation encountered an error prior to commit; durable rollback completed successfully.

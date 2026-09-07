@@ -85,7 +85,8 @@ Requests arrive as a Base64-encoded JSON payload either via `-PayloadB64` or `-P
    - On 2+ matched folders, resolves canonical destination state via `Resolve-CanonicalDestinationState $topo`. On terminal states (`UNOWNED_DIRECTORY` -> `CANONICAL_FOLDER_NO_UUID_EVIDENCE`, `NON_DIRECTORY_OCCUPANT` -> `MERGE_CANONICAL_PATH_OCCUPIED`, `INSPECTION_FAILED` -> `MERGE_TOPOLOGY_ENUMERATION_FAILED`), returns immediately.
    - Evaluates managed notes and detects cross-folder `NOTE_TYPE_COLLISION`.
    - Recomputes live `New-MergePlanTokenV3` and validates requested `planToken` against live token (`PLAN_TOKEN_MISMATCH`).
-   - Symbolic ordering invariant: `topoErrIdx < c2Idx < applyResolverAssignIdx < branchIdx < managedNotesIdx < tokenV3Idx < txPrepIdx`. `c2Idx` represents the APPLY C-2 matched-folder count-one terminal handling (`MERGE_NOT_REQUIRED`). Terminal states never reach Token V3 recomputation, transaction preparation, staging, or mutation.
+   - J-2 Step 11: Live target occupancy preflight inspection (`Resolve-MergeTargetOccupancyState`). Derives `$targetPath = Join-Path $topo.CanonicalFolderFullPath $n.FileName` for each managed note. On `OCCUPIED`, returns terminal `NG` / `MERGE_TARGET_FILE_EXISTS` (`updatedFiles = 0`, `folderRenamed = false`, non-empty `userMessage` containing target path). On `INSPECTION_FAILED`, returns terminal `NG` / `MERGE_OPERATION_FAILED` (`userMessage` containing target path). On `ABSENT` or `SELF_SOURCE`, continues. (APPLY_ONLY; PLAN pipeline never invokes Step 11).
+   - Symbolic ordering invariant: `topoErrIdx < c2Idx < applyResolverAssignIdx < branchIdx < managedNotesIdx < tokenV3Idx < tokenMismatchIdx < step11PreflightIdx < txPrepIdx`. `c2Idx` represents the APPLY C-2 matched-folder count-one terminal handling (`MERGE_NOT_REQUIRED`). `managedNotesIdx` includes managed-note recollection and `NOTE_TYPE_COLLISION` detection. `step11PreflightIdx` represents the J-2 Step 11 target occupancy preflight loop, and `txPrepIdx` represents `$inProgressData` / `.inprogress.json` creation. Terminal states never reach transaction preparation, staging, or mutation, and any terminal exit safely releases `ACTIVE.lock`.
    - Writes transaction inprogress evidence (`.inprogress.json`).
    - Creates staging directory via `New-MergeStagingOwnershipSafe`.
    - Writes durable transaction journal via `Write-JournalEvidenceSafe`.
@@ -148,7 +149,41 @@ Phase-2 migration branching is fixed exclusively by Step 6 `$canonicalState`:
 
 The former late `Test-Path -LiteralPath $targetCanonicalDir` selector has been removed.
 
-### 3.2 Win32 Kernel APIs (P/Invoke)
+### 3.2 Target Occupancy Preflight Resolver (`Resolve-MergeTargetOccupancyState`)
+
+To detect existing filesystem occupants at the canonical merge destination before any staging or transaction mutations occur, the payload implements a dedicated private helper:
+
+- **Function Name**: `Resolve-MergeTargetOccupancyState`
+- **Signature**: `param([string]$TargetPath, [string]$SourcePath)`
+- **Invocation Contract**: Evaluated per managed note during APPLY: `Resolve-MergeTargetOccupancyState -TargetPath $targetPath -SourcePath $n.FullPath`.
+- **Exact Inspection Primitive**:
+  ```powershell
+  Get-Item -LiteralPath $TargetPath -Force -ErrorAction Stop
+  ```
+- **Helper Character**:
+  - Read-only with respect to filesystem state.
+  - Not a JSON response emitter (returns one of four classification strings to caller).
+  - Not a mutation helper.
+
+#### State Classification & Return Semantics:
+
+| State | Detection & Classification Condition |
+|---|---|
+| `SELF_SOURCE` | `TargetPath` equals `SourcePath` evaluated with `[System.StringComparison]::OrdinalIgnoreCase`. Full-path comparison; filesystem object identity not required. |
+| `ABSENT` | `[System.Management.Automation.ItemNotFoundException]` caught; or the current Windows PowerShell compatibility fallback where the Get-Item result is $null (`$null -eq $item`). |
+| `OCCUPIED` | `Get-Item` returns non-null filesystem object occupying `$TargetPath` after `SELF_SOURCE` exclusion. |
+| `INSPECTION_FAILED` | Any non-`ItemNotFoundException` exception caught during `Get-Item` (e.g. sharing violation, access denied, I/O failure). |
+
+#### Integration & Terminal Response Mapping in `Invoke-ApplyCustomerFolderMerge`:
+- **Execution Point**: Executed after `PLAN_TOKEN_MISMATCH` validation, and strictly before `$inProgressData` creation, staging directory creation (`staging_<TxId>`), durable journal creation (`<TxId>.journal.json`), or customer data mutation.
+- **Mapping**:
+  - `OCCUPIED` $\rightarrow$ `NG` / `MERGE_TARGET_FILE_EXISTS` (`updatedFiles = 0`, `folderRenamed = false`, `userMessage` contains `$targetPath`).
+  - `INSPECTION_FAILED` $\rightarrow$ `NG` / `MERGE_OPERATION_FAILED` (`userMessage` contains `$targetPath`).
+  - `ABSENT` / `SELF_SOURCE` $\rightarrow$ Preflight passes cleanly; normal APPLY sequence continues.
+- **Pipeline Isolation**: The PLAN pipeline (`Invoke-PlanCustomerFolderMerge`) does not invoke `Resolve-MergeTargetOccupancyState`.
+- **TOCTOU Defense Preservation**: Generic staging same-name throw (`throw "ステージングに同名ファイルが既に存在します: $dstPath"`) and canonical same-name throw (`throw "最終Canonicalフォルダに同名ファイルが既に存在します: $finalFile"`) are preserved in the payload AST as defense-in-depth against race conditions.
+
+### 3.3 Win32 Kernel APIs (P/Invoke)
 
 To guarantee safety beyond standard .NET abstractions, the payload includes a C# type definition (`Win32NativeMergeHelper`) compiling native Win32 kernel APIs:
 
@@ -244,6 +279,32 @@ The repository test harness (`WindowsTestKit_CUSTOMER_FOLDER_MERGE`) verifies re
   - `Window_G`: Crash immediately after `committed.json` write.
   - `Window_H`: Crash after rollback completion before evidence cleanup.
 - Verification: Test harnesses execute `Run-MergeTests.ps1` and verify that the durable journal and rollback engine leave the vault in a clean, recoverable state across all crash windows.
+
+### 5.1 Dedicated Step-11 Regression Suite (`Test-MergeTargetFileExistsRegression.ps1`)
+
+Dedicated regression test script `WindowsTestKit_CUSTOMER_FOLDER_MERGE\Test-MergeTargetFileExistsRegression.ps1` validates the J-2 Step 11 target occupancy preflight contract under Windows PowerShell 5.1 (`17/17 PASS`, exit code 0).
+
+Key contract verification coverage:
+
+| Test ID | Test Scenario | Expected Outcome & Verified Contract |
+|---|---|---|
+| `MTF01` | Canonical destination matches source note path | `OK` / `MERGE_COMPLETED`; `SELF_SOURCE` exemption via `OrdinalIgnoreCase` |
+| `MTF02` | Unmanaged same-name standard file in canonical folder | `NG` / `MERGE_TARGET_FILE_EXISTS`; unmanaged file occupant collision |
+| `MTF03` | Same-name Markdown note with no UUID frontmatter | `NG` / `MERGE_TARGET_FILE_EXISTS`; UUID-less Markdown occupant collision |
+| `MTF04` | Same-name Markdown note with different customer UUID | `NG` / `MERGE_TARGET_FILE_EXISTS`; different-UUID Markdown occupant collision |
+| `MTF05` | Same-name subdirectory in canonical folder | `NG` / `MERGE_TARGET_FILE_EXISTS`; directory occupant collision |
+| `MTF06` | Response shape and property integrity | `status = "NG"`, `code = "MERGE_TARGET_FILE_EXISTS"`, `userMessage` with target path, `updatedFiles = 0`, `folderRenamed = false` |
+| `MTF07` | Zero-mutation and lock-release proof | No staging/journal/in-progress files created; customer files untouched; `ACTIVE.lock` cleanly released |
+| `MTF08` | AST structural order & operator guard validation | Evaluated after token mismatch and before `$inProgressData`; `TokenKind::Ieq` operator check |
+| `MTF09` | Stale multi-folder plan token with changed topology | `NG` / `PLAN_TOKEN_MISMATCH` takes precedence over Step 11 |
+| `MTF10` | Single matching folder with colliding file in canonical folder | `OK` / `MERGE_NOT_REQUIRED` takes precedence over Step 11 |
+| `MTF11` | Canonical folder exists without UUID evidence | `NG` / `CANONICAL_FOLDER_NO_UUID_EVIDENCE` takes precedence over Step 11 |
+| `MTF12` | Same note type across multiple source folders | `NG` / `NOTE_TYPE_COLLISION` takes precedence over Step 11 |
+| `MTF13` | No occupant at canonical destination path | `OK` / `MERGE_COMPLETED`; clean pass-through (`ABSENT`) |
+| `MTF14` | AST check for generic staging same-name throw | Verifies `throw "ステージングに同名ファイルが既に存在します..."` remains in payload AST |
+| `MTF15` | AST check for generic canonical same-name throw | Verifies `throw "最終Canonicalフォルダに同名ファイルが既に存在します..."` remains in payload AST |
+| `MTF16` | AST check for PLAN phase isolation | Verifies `Invoke-PlanCustomerFolderMerge` AST contains no Step-11 call |
+| `MTF17` | Unexpected inspection failure runtime & AST check | `NG` / `MERGE_OPERATION_FAILED` with target path in `userMessage` |
 
 ---
 

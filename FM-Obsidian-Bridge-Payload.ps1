@@ -2379,6 +2379,33 @@ function Resolve-CanonicalDestinationState {
   return "NON_DIRECTORY_OCCUPANT"
 }
 
+function Resolve-MergeTargetOccupancyState {
+  param(
+    [string]$TargetPath,
+    [string]$SourcePath
+  )
+
+  if ([string]::Equals($TargetPath, $SourcePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+    return "SELF_SOURCE"
+  }
+
+  try {
+    $item = Get-Item -LiteralPath $TargetPath -Force -ErrorAction Stop
+  }
+  catch [System.Management.Automation.ItemNotFoundException] {
+    return "ABSENT"
+  }
+  catch {
+    return "INSPECTION_FAILED"
+  }
+
+  if ($null -eq $item) {
+    return "ABSENT"
+  }
+
+  return "OCCUPIED"
+}
+
 function Write-TransactionEvidenceSafe {
   param(
     [string]$TxDir,
@@ -3426,6 +3453,20 @@ function Invoke-ApplyCustomerFolderMerge {
     if ($reqToken -ne $liveToken) {
       Write-Output (New-MergeResponse $reqId "NG" "PLAN_TOKEN_MISMATCH" "フォルダ構成またはノート構成がプラン作成時から変更されています。")
       return
+    }
+
+    # J-2 Step 11: Live target occupancy preflight inspection
+    foreach ($n in $allManagedNotes) {
+      $targetPath = Join-Path $topo.CanonicalFolderFullPath $n.FileName
+      $occState = Resolve-MergeTargetOccupancyState -TargetPath $targetPath -SourcePath $n.FullPath
+      if ($occState -eq "OCCUPIED") {
+        Write-Output (New-MergeResponse $reqId "NG" "MERGE_TARGET_FILE_EXISTS" "マージ先に同名ファイルまたはオブジェクトが既に存在します: $targetPath")
+        return
+      }
+      elseif ($occState -eq "INSPECTION_FAILED") {
+        Write-Output (New-MergeResponse $reqId "NG" "MERGE_OPERATION_FAILED" "マージ先パスの検査に失敗しました: $targetPath")
+        return
+      }
     }
 
     $inProgressData = @{
