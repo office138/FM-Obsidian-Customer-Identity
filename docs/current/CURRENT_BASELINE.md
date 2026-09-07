@@ -35,31 +35,31 @@
 | implementationVersion | 9.1.0 |
 | versionHeader | Ver: 9.1.0 (2026-08-29) - Customer Folder Merge v1 Implementation |
 | canonicalSourcePath | FM-Obsidian-Bridge-Payload.ps1 |
-| canonicalSha256 | B263BEB4FF76388E8047EF319FEB8D7AF2E79CD2F45254CBBE3488AF91FCD05A |
-| canonicalSizeBytes | 263719 |
+| canonicalSha256 | C37382F53E7995EE4EAE1E5EC3D029E8F9533469C9676D05A518D24F8A7474C6 |
+| canonicalSizeBytes | 263974 |
 | canonicalEncoding | UTF-8 BOM |
 | canonicalEol | CRLF |
-| bindingCommitSha | 4bd1b72377e11330760d1645b5c2883987d14cb1 |
-| commitParentSha | 9a3bc32006ee05cc331b76bb5855a70d60fe4230 |
-| closureAuthority | J2_STEP6_REPOSITORY_BASELINE_HUMAN_GATE_20260907 |
-| closureDisposition | PASS_J2_STEP6_REPOSITORY_CANONICAL_BASELINE_PROMOTED_VAULT_DEPLOYMENT_NOT_AUTHORIZED |
+| bindingCommitSha | cf03dfc5b8d9badae71210badb24806e2bf342ea |
+| commitParentSha | 78e31f3435046622ea9274fbec9b91befe3b27b0 |
+| closureAuthority | APPLY_C2_REPOSITORY_BASELINE_HUMAN_GATE_20260907 |
+| closureDisposition | PASS_APPLY_C2_REPOSITORY_CANONICAL_BASELINE_PROMOTED_VAULT_DEPLOYMENT_NOT_AUTHORIZED |
 | productionVaultTargetPath | C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1 |
 | effectiveDate | 2026-09-07 |
-| currentStatus | repository canonical / J-2 Step 6 formally closed / Vault deployment not authorized by this baseline gate |
+| currentStatus | repository canonical / APPLY C-2 formally closed / Vault deployment not authorized by this baseline gate |
 
 ---
 
 ## 4. Formal Closure Authority
 
-This repository baseline is formally closed under authority **J2_STEP6_REPOSITORY_BASELINE_HUMAN_GATE_20260907** with closure disposition:
-`PASS_J2_STEP6_REPOSITORY_CANONICAL_BASELINE_PROMOTED_VAULT_DEPLOYMENT_NOT_AUTHORIZED`
+This repository baseline is formally closed under authority **APPLY_C2_REPOSITORY_BASELINE_HUMAN_GATE_20260907** with closure disposition:
+`PASS_APPLY_C2_REPOSITORY_CANONICAL_BASELINE_PROMOTED_VAULT_DEPLOYMENT_NOT_AUTHORIZED`
 
 This closure is repository-baseline closure only. It is NOT Vault deployment authority.
 
 The `productionVaultTargetPath` below designates the intended production deployment target path. It does NOT assert that the newly promoted repository baseline has been deployed to that location. Live Vault deployment is a separate governance event not authorized by this baseline gate.
 
 - **Production Target Path (designated):** `C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1`
-- **Binding Commit:** `4bd1b72377e11330760d1645b5c2883987d14cb1`
-- **Canonical SHA256:** `B263BEB4FF76388E8047EF319FEB8D7AF2E79CD2F45254CBBE3488AF91FCD05A`
+- **Binding Commit:** `cf03dfc5b8d9badae71210badb24806e2bf342ea`
+- **Canonical SHA256:** `C37382F53E7995EE4EAE1E5EC3D029E8F9533469C9676D05A518D24F8A7474C6`
 - **Implementation Version:** `9.1.0`
 
