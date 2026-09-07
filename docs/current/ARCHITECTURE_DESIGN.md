@@ -73,14 +73,24 @@ Requests arrive as a Base64-encoded JSON payload either via `-PayloadB64` or `-P
    - Branches on `MatchedFolders.Count`:
      - 0 matched folders: returns terminal `NG` / `CUSTOMER_NOT_FOUND` via topology error handling.
      - 1 matched folder: returns terminal `OK` / `MERGE_NOT_REQUIRED`; no plan, no planToken, no Token V3.
-     - 2+ matched folders: continues through canonical destination determination, managed-note evaluation, `DUPLICATE_NOTE_TYPE` protection, plan construction, Token V3 generation, and returns structured plan JSON (`MERGE_PLAN_READY`).
+     - 2+ matched folders: resolves canonical destination state via `Resolve-CanonicalDestinationState $topo`. On terminal states (`UNOWNED_DIRECTORY` -> `CANONICAL_FOLDER_NO_UUID_EVIDENCE`, `NON_DIRECTORY_OCCUPANT` -> `MERGE_CANONICAL_PATH_OCCUPIED`, `INSPECTION_FAILED` -> `MERGE_TOPOLOGY_ENUMERATION_FAILED`), returns immediately. On non-terminal states (`MATCHED_EXISTING`, `ABSENT`), continues through managed-note evaluation, `DUPLICATE_NOTE_TYPE` protection, plan construction, Token V3 generation, and returns structured plan JSON (`MERGE_PLAN_READY`).
+   - Symbolic ordering invariant: `planOneFolderIdx < planResolverAssignIdx < planBranchIdx < planManagedNotesIdx`.
    - Releases the per-vault lock on branch exit.
 2. `APPLY_CUSTOMER_FOLDER_MERGE` -> `Invoke-ApplyCustomerFolderMerge`:
    - Acquires exclusive per-vault transaction lock (`ACTIVE.lock`).
-   - Validates requested plan token against live recomputed plan token.
+   - Scans customer root `01_顧客` via `Get-CustomerMergeTopology`.
+   - Resolves canonical destination state via `Resolve-CanonicalDestinationState $topo`. On terminal states (`UNOWNED_DIRECTORY` -> `CANONICAL_FOLDER_NO_UUID_EVIDENCE`, `NON_DIRECTORY_OCCUPANT` -> `MERGE_CANONICAL_PATH_OCCUPIED`, `INSPECTION_FAILED` -> `MERGE_TOPOLOGY_ENUMERATION_FAILED`), returns immediately.
+   - Evaluates managed notes and detects cross-folder `NOTE_TYPE_COLLISION`.
+   - Recomputes live `New-MergePlanTokenV3` and validates requested `planToken` against live token (`PLAN_TOKEN_MISMATCH`).
+   - Symbolic ordering invariant: `topoErrIdx < applyResolverAssignIdx < branchIdx < managedNotesIdx < tokenV3Idx < txPrepIdx`. Terminal states never reach Token V3 recomputation, transaction preparation, staging, or mutation.
+   - Writes transaction inprogress evidence (`.inprogress.json`).
    - Creates staging directory via `New-MergeStagingOwnershipSafe`.
    - Writes durable transaction journal via `Write-JournalEvidenceSafe`.
-   - Moves files from source folders to staging, then staging to canonical target.
+   - Moves files from source folders to staging (Phase 1).
+   - Executes Phase 2 migration based on Step 6 `$canonicalState` fixation:
+     - Case A (`$canonicalState -eq "MATCHED_EXISTING"`): Moves individual staged files to canonical destination, moves ownership marker, and deletes empty staging directory.
+     - Case B (`$canonicalState -eq "ABSENT"`): Moves staging directory atomically to canonical destination path.
+     - (The former late `Test-Path -LiteralPath $targetCanonicalDir` selector has been removed).
    - **Executes final topology verification** via `Get-CustomerMergeTopology` *prior* to commit.
    - Writes `committed.json` and updates `$isCommitted = $true`.
    - Executes post-commit cleanup (ownership marker and transaction evidence).
@@ -96,7 +106,46 @@ Requests arrive as a Base64-encoded JSON payload either via `-PayloadB64` or `-P
 
 ---
 
-## 3. Win32 Native Interoperability (P/Invoke) Layer
+## 3. Win32 Native Interoperability (P/Invoke) & Canonical Resolver Layer
+
+### 3.1 Canonical Destination Resolver (`Resolve-CanonicalDestinationState`)
+
+To eliminate internal disposition discrepancies and unify canonical path validation between PLAN and APPLY, the payload implements a shared private helper:
+
+- **Function Name**: `Resolve-CanonicalDestinationState`
+- **Signature**: `param([hashtable]$Topology)`
+- **Invocation Contract**: Single positional topology argument (`Resolve-CanonicalDestinationState $topo`).
+- **Inspection Path**: `$canonicalPath = $Topology.CanonicalFolderFullPath`
+- **Exact Inspection Primitive**:
+  ```powershell
+  Get-Item -LiteralPath $canonicalPath -Force -ErrorAction Stop
+  ```
+
+#### State Transition & Return Semantics:
+
+| State | Detection & Classification Condition |
+|---|---|
+| `ABSENT` | `[System.Management.Automation.ItemNotFoundException]` caught; or Windows PowerShell 5.1 literal bracket-path absent condition returning `$null`. |
+| `INSPECTION_FAILED` | Any non-`ItemNotFoundException` exception caught during `Get-Item` (e.g. sharing violation, access denied, I/O failure). |
+| `MATCHED_EXISTING` | `Get-Item` returns container (`$item.PSIsContainer -eq $true`) whose identity matches `$Topology.MatchedFolders` by `canonicalPath == matched.FullPath` or `CanonicalFolderName == matched.FolderName` using explicit `[System.StringComparison]::OrdinalIgnoreCase`. |
+| `UNOWNED_DIRECTORY` | `Get-Item` returns container (`$item.PSIsContainer -eq $true`) that does not match any entry in `$Topology.MatchedFolders`. |
+| `NON_DIRECTORY_OCCUPANT` | `Get-Item` returns a non-container filesystem object (`$item.PSIsContainer -eq $false`) occupying `$canonicalPath`. |
+
+#### Terminal Response Contract:
+PLAN and APPLY map resolver states as follows:
+- `UNOWNED_DIRECTORY` $\rightarrow$ `NG` / `CANONICAL_FOLDER_NO_UUID_EVIDENCE`
+- `NON_DIRECTORY_OCCUPANT` $\rightarrow$ `NG` / `MERGE_CANONICAL_PATH_OCCUPIED`
+- `INSPECTION_FAILED` $\rightarrow$ `NG` / `MERGE_TOPOLOGY_ENUMERATION_FAILED`
+- `MATCHED_EXISTING` / `ABSENT` $\rightarrow$ Non-terminal, proceeds to managed-note processing.
+
+#### Phase-2 Case A / Case B State Fixation:
+Phase-2 migration branching is fixed exclusively by Step 6 `$canonicalState`:
+- `$canonicalState -eq "MATCHED_EXISTING"` $\rightarrow$ **Case A**
+- `$canonicalState -eq "ABSENT"` $\rightarrow$ **Case B**
+
+The former late `Test-Path -LiteralPath $targetCanonicalDir` selector has been removed.
+
+### 3.2 Win32 Kernel APIs (P/Invoke)
 
 To guarantee safety beyond standard .NET abstractions, the payload includes a C# type definition (`Win32NativeMergeHelper`) compiling native Win32 kernel APIs:
 

@@ -79,6 +79,32 @@ The PLAN phase returns different terminal results depending on the number of fol
 > The single-folder early-return (`MERGE_NOT_REQUIRED`) is implemented and independently closed in the **PLAN phase only** (`PLAN C-1`, committed at `df8b4791`).
 > The corresponding APPLY-phase single-folder path (`APPLY C-2`) is **not present in the current committed source** and is not current canonical behavior.
 
+### 3.1.2 Canonical Destination Resolver & Terminal Contract
+
+Prior to managed-note evaluation and token generation, both PLAN and APPLY evaluate the filesystem state of the target canonical destination path (`CanonicalFolderFullPath`) using the shared private helper `Resolve-CanonicalDestinationState`:
+
+| Resolver State | PLAN Response (`status` / `code`) | APPLY Response (`status` / `code`) | Disposition / Continuation |
+|---|---|---|---|
+| `MATCHED_EXISTING` | Continues to managed-note processing | Continues to managed-note processing | Non-terminal. Fixes Phase-2 migration to **Case A** (merge into existing canonical directory). |
+| `ABSENT` | Continues to managed-note processing | Continues to managed-note processing | Non-terminal. Fixes Phase-2 migration to **Case B** (atomic staging directory move). |
+| `UNOWNED_DIRECTORY` | `NG` / `CANONICAL_FOLDER_NO_UUID_EVIDENCE` | `NG` / `CANONICAL_FOLDER_NO_UUID_EVIDENCE` | **Terminal Fail-Closed**. Canonical directory exists on disk but contains no matching customer UUID evidence. |
+| `NON_DIRECTORY_OCCUPANT` | `NG` / `MERGE_CANONICAL_PATH_OCCUPIED` | `NG` / `MERGE_CANONICAL_PATH_OCCUPIED` | **Terminal Fail-Closed**. Canonical destination path is occupied by a non-directory filesystem object (e.g. standard file). |
+| `INSPECTION_FAILED` | `NG` / `MERGE_TOPOLOGY_ENUMERATION_FAILED` | `NG` / `MERGE_TOPOLOGY_ENUMERATION_FAILED` | **Terminal Fail-Closed**. Filesystem inspection of canonical path failed (access/sharing violation or unexpected OS error). |
+
+#### Fail-Closed Terminal Boundary & Symbolic Ordering
+For terminal states (`UNOWNED_DIRECTORY`, `NON_DIRECTORY_OCCUPANT`, `INSPECTION_FAILED`), execution terminates immediately and never proceeds further:
+- **PLAN Ordering Invariant**: `planOneFolderIdx < planResolverAssignIdx < planBranchIdx < planManagedNotesIdx`.  
+  Terminal branches exit before managed-note processing, duplicate note type detection, and `New-MergePlanTokenV3` plan-token generation.
+- **APPLY Ordering Invariant**: `topoErrIdx < applyResolverAssignIdx < branchIdx < managedNotesIdx < tokenV3Idx < txPrepIdx`.  
+  Terminal branches exit before managed-note processing, duplicate collision detection, live `New-MergePlanTokenV3` calculation, transaction preparation (`inprogress.json`), staging directory creation, journal creation, or customer data mutation.
+
+#### Phase-2 Case A / Case B State Fixation
+The Phase-2 mutation disposition is fixed exclusively by the Step 6 resolver state:
+- `$canonicalState -eq "MATCHED_EXISTING"` $\rightarrow$ **Case A** (individual file moves to canonical folder, ownership marker move, empty staging deletion).
+- `$canonicalState -eq "ABSENT"` $\rightarrow$ **Case B** (atomic directory move from staging to canonical path).
+
+The former late `Test-Path -LiteralPath $targetCanonicalDir` Case A/B selector has been removed and replaced by `$canonicalState -eq "MATCHED_EXISTING"`. This guarantees that no subsequent fresh filesystem test can alter the Step 6 disposition.
+
 ### 3.2 APPLY Phase (`APPLY_CUSTOMER_FOLDER_MERGE`)
 - Requires an explicit, non-empty `planToken` provided in the payload.
 - Acquires exclusive per-vault transaction lock (`ACTIVE.lock`).
@@ -157,6 +183,7 @@ These two codes are distinct in production and must not be conflated into a sing
 - `MERGE_OPERATION_FAILED`: Lock acquisition failed due to non-contention OS/filesystem error.
 - `MERGE_RECOVERY_REQUIRED`: Unresolved `.inprogress.json` transaction marker exists from a prior incomplete transaction.
 - `CANONICAL_FOLDER_NO_UUID_EVIDENCE`: A folder matching canonical name exists on disk but contains no UUID evidence for target client.
+- `MERGE_CANONICAL_PATH_OCCUPIED`: The canonical destination path is occupied by a non-directory filesystem object, so merge planning/application stops fail-closed.
 - `PLAN_TOKEN_MISMATCH`: Requested `planToken` does not match live recomputed plan token.
 - `DUPLICATE_NOTE_TYPE`: Multiple managed notes with the same `noteType` detected in candidate folder.
 - `NOTE_TYPE_COLLISION`: Colliding managed notes of same `noteType` found across merging candidate folders during APPLY.

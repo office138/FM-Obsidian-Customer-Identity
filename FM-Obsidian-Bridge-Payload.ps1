@@ -2346,6 +2346,39 @@ function Get-CustomerMergeTopology {
   }
 }
 
+function Resolve-CanonicalDestinationState {
+  param([hashtable]$Topology)
+
+  $canonicalPath = $Topology.CanonicalFolderFullPath
+  try {
+    $item = Get-Item -LiteralPath $canonicalPath -Force -ErrorAction Stop
+  }
+  catch [System.Management.Automation.ItemNotFoundException] {
+    return "ABSENT"
+  }
+  catch {
+    return "INSPECTION_FAILED"
+  }
+
+  if ($null -eq $item) {
+    return "ABSENT"
+  }
+
+  if ($item.PSIsContainer) {
+    if ($null -ne $Topology.MatchedFolders) {
+      foreach ($mf in $Topology.MatchedFolders) {
+        if ([string]::Equals($canonicalPath, $mf.FullPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string]::Equals($Topology.CanonicalFolderName, $mf.FolderName, [System.StringComparison]::OrdinalIgnoreCase)) {
+          return "MATCHED_EXISTING"
+        }
+      }
+    }
+    return "UNOWNED_DIRECTORY"
+  }
+
+  return "NON_DIRECTORY_OCCUPANT"
+}
+
 function Write-TransactionEvidenceSafe {
   param(
     [string]$TxDir,
@@ -3170,17 +3203,17 @@ function Invoke-PlanCustomerFolderMerge {
     }
 
     $canonicalFolderName = $topo.CanonicalFolderName
-    $canonicalExistsInSet = $false
-    foreach ($mf in $topo.MatchedFolders) {
-      if ($mf.FolderName -eq $canonicalFolderName) {
-        $canonicalExistsInSet = $true
-        break
-      }
-    }
-    $allExistingFolders = Get-ChildItem -LiteralPath $topo.CustRoot -Directory -Force -ErrorAction SilentlyContinue
-    $canonicalExistsOnDisk = ($allExistingFolders | Where-Object { $_.Name -eq $canonicalFolderName })
-    if ($canonicalExistsOnDisk -and (-not $canonicalExistsInSet)) {
+    $canonicalState = Resolve-CanonicalDestinationState $topo
+    if ($canonicalState -eq "UNOWNED_DIRECTORY") {
       Write-Output (New-MergeResponse $reqId "NG" "CANONICAL_FOLDER_NO_UUID_EVIDENCE" "canonicalフォルダ '$canonicalFolderName' が存在しますが、対象UUIDの証拠を持たないため統合計画を生成できません。")
+      return
+    }
+    elseif ($canonicalState -eq "NON_DIRECTORY_OCCUPANT") {
+      Write-Output (New-MergeResponse $reqId "NG" "MERGE_CANONICAL_PATH_OCCUPIED" "canonicalパスに通常ファイルが存在するため、統合計画を生成できません。")
+      return
+    }
+    elseif ($canonicalState -eq "INSPECTION_FAILED") {
+      Write-Output (New-MergeResponse $reqId "NG" "MERGE_TOPOLOGY_ENUMERATION_FAILED" "canonicalパスの検査に失敗しました。")
       return
     }
 
@@ -3354,6 +3387,20 @@ function Invoke-ApplyCustomerFolderMerge {
       return
     }
 
+    $canonicalState = Resolve-CanonicalDestinationState $topo
+    if ($canonicalState -eq "UNOWNED_DIRECTORY") {
+      Write-Output (New-MergeResponse $reqId "NG" "CANONICAL_FOLDER_NO_UUID_EVIDENCE" "canonicalフォルダ '$($topo.CanonicalFolderName)' が存在しますが、対象UUIDの証拠を持たないため統合を実行できません。")
+      return
+    }
+    elseif ($canonicalState -eq "NON_DIRECTORY_OCCUPANT") {
+      Write-Output (New-MergeResponse $reqId "NG" "MERGE_CANONICAL_PATH_OCCUPIED" "canonicalパスに通常ファイルが存在するため、統合を実行できません。")
+      return
+    }
+    elseif ($canonicalState -eq "INSPECTION_FAILED") {
+      Write-Output (New-MergeResponse $reqId "NG" "MERGE_TOPOLOGY_ENUMERATION_FAILED" "canonicalパスの検査に失敗しました。")
+      return
+    }
+
     $allManagedNotes = @()
     $globalNoteTypes = New-Object System.Collections.Generic.HashSet[string]
     $allSourceFolderNames = @()
@@ -3445,7 +3492,7 @@ function Invoke-ApplyCustomerFolderMerge {
 
     # B-4 Mutation Phase 2
     $targetCanonicalDir = $topo.CanonicalFolderFullPath
-    if (Test-Path -LiteralPath $targetCanonicalDir) {
+    if ($canonicalState -eq "MATCHED_EXISTING") {
       # Case A: Move individual files to canonical
       foreach ($n in $allManagedNotes) {
         $stagedFile = Join-Path $stagingDir $n.FileName
