@@ -750,11 +750,17 @@ try {
   $uuidB = "bbbbbbbb-1111-2222-3333-444444444444"
   $sourceOldFolderB = Join-Path $caseBCustRoot "株式会社テストB_旧"
   [void][System.IO.Directory]::CreateDirectory($sourceOldFolderB)
+  $sourceOldFolderB2 = Join-Path $caseBCustRoot "株式会社テストB_旧2"
+  [void][System.IO.Directory]::CreateDirectory($sourceOldFolderB2)
 
   $pfxKeiyaku = Get-IconPrefix "契約"
+  $pfxJiko = Get-IconPrefix "事故"
   $noteB1Name = ($pfxKeiyaku + "_テストB.md")
   $noteB1 = Join-Path $sourceOldFolderB $noteB1Name
   [System.IO.File]::WriteAllLines($noteB1, @("---", ("UUID: " + $uuidB), "---", "# 契約B"), [System.Text.Encoding]::UTF8)
+  $noteB2Name = ($pfxJiko + "_テストB2.md")
+  $noteB2 = Join-Path $sourceOldFolderB2 $noteB2Name
+  [System.IO.File]::WriteAllLines($noteB2, @("---", ("UUID: " + $uuidB), "---", "# 事故B2"), [System.Text.Encoding]::UTF8)
 
   $planPayloadB = @{
     protocolVersion = 1
@@ -785,9 +791,10 @@ try {
   $applyOkB = ($applyOutB.status -eq "OK") -and ($applyOutB.code -eq "MERGE_COMPLETED")
 
   $canonExistsAfter = (Test-Path -LiteralPath $canonFolderBPath -PathType Container)
-  $noteInCanonB = (Test-Path -LiteralPath (Join-Path $canonFolderBPath $noteB1Name))
+  $note1InCanonB = (Test-Path -LiteralPath (Join-Path $canonFolderBPath $noteB1Name))
+  $note2InCanonB = (Test-Path -LiteralPath (Join-Path $canonFolderBPath $noteB2Name))
 
-  Report-Test "B4_CASE_B_END_TO_END_APPLY" ($canonAbsentBefore -and $planOkB -and $applyOkB -and $canonExistsAfter -and $noteInCanonB) "Plan: $planOkB, Apply: $applyOkB, CanonCreated: $canonExistsAfter"
+  Report-Test "B4_CASE_B_END_TO_END_APPLY" ($canonAbsentBefore -and $planOkB -and $applyOkB -and $canonExistsAfter -and $note1InCanonB -and $note2InCanonB) "Plan: $planOkB, Apply: $applyOkB, CanonCreated: $canonExistsAfter, Note1: $note1InCanonB, Note2: $note2InCanonB"
 } catch {
   Report-Test "B4_CASE_B_END_TO_END_APPLY" $false $_.Exception.Message
 }
@@ -1021,9 +1028,14 @@ try {
   $uuidD = "dddddddd-1111-2222-3333-444444444444"
   $fD = Join-Path $crashCust_D "株式会社テストD ($uuidD)"
   [void][System.IO.Directory]::CreateDirectory($fD)
+  $fD2 = Join-Path $crashCust_D "株式会社テストD_旧"
+  [void][System.IO.Directory]::CreateDirectory($fD2)
   $pfxKeiyaku = Get-IconPrefix "契約"
+  $pfxJiko = Get-IconPrefix "事故"
   $nD = Join-Path $fD ($pfxKeiyaku + "_テストD.md")
   [System.IO.File]::WriteAllLines($nD, @("---", ("UUID: " + $uuidD), "---", "# D"), [System.Text.Encoding]::UTF8)
+  $nD2 = Join-Path $fD2 ($pfxJiko + "_テストD2.md")
+  [System.IO.File]::WriteAllLines($nD2, @("---", ("UUID: " + $uuidD), "---", "# D2"), [System.Text.Encoding]::UTF8)
 
   $planOutD = Invoke-PlanCustomerFolderMerge @{ protocolVersion=1; action="PLAN_CUSTOMER_FOLDER_MERGE"; requestId="req-plan-d"; VaultRoot=$crashVault_D; pk_CLIENT=$uuidD; companyNameRaw="株式会社テストD" } | ConvertFrom-Json
 
@@ -1100,9 +1112,14 @@ try {
   $uuidE = "eeeeeeee-1111-2222-3333-444444444444"
   $fE = Join-Path $crashCust_E "株式会社テストE ($uuidE)"
   [void][System.IO.Directory]::CreateDirectory($fE)
+  $fE2 = Join-Path $crashCust_E "株式会社テストE_旧"
+  [void][System.IO.Directory]::CreateDirectory($fE2)
   $pfxKeiyaku = Get-IconPrefix "契約"
+  $pfxJiko = Get-IconPrefix "事故"
   $nE = Join-Path $fE ($pfxKeiyaku + "_テストE.md")
   [System.IO.File]::WriteAllLines($nE, @("---", ("UUID: " + $uuidE), "---", "# E"), [System.Text.Encoding]::UTF8)
+  $nE2 = Join-Path $fE2 ($pfxJiko + "_テストE2.md")
+  [System.IO.File]::WriteAllLines($nE2, @("---", ("UUID: " + $uuidE), "---", "# E2"), [System.Text.Encoding]::UTF8)
   $expSha_E = Get-FileSha256Raw $nE
 
   $planOutE = Invoke-PlanCustomerFolderMerge @{ protocolVersion=1; action="PLAN_CUSTOMER_FOLDER_MERGE"; requestId="req-plan-e"; VaultRoot=$crashVault_E; pk_CLIENT=$uuidE; companyNameRaw="株式会社テストE" } | ConvertFrom-Json
@@ -1323,9 +1340,14 @@ try {
   $uuidG = "77777777-1111-2222-3333-444444444444"
   $fG = Join-Path $crashCust_G "株式会社テストG ($uuidG)"
   [void][System.IO.Directory]::CreateDirectory($fG)
+  $fG2 = Join-Path $crashCust_G "株式会社テストG_旧"
+  [void][System.IO.Directory]::CreateDirectory($fG2)
   $pfxKeiyaku = Get-IconPrefix "契約"
+  $pfxJiko = Get-IconPrefix "事故"
   $nG = Join-Path $fG ($pfxKeiyaku + "_テストG.md")
   [System.IO.File]::WriteAllLines($nG, @("---", ("UUID: " + $uuidG), "---", "# G"), [System.Text.Encoding]::UTF8)
+  $nG2 = Join-Path $fG2 ($pfxJiko + "_テストG2.md")
+  [System.IO.File]::WriteAllLines($nG2, @("---", ("UUID: " + $uuidG), "---", "# G2"), [System.Text.Encoding]::UTF8)
 
   $planOutG = Invoke-PlanCustomerFolderMerge @{ protocolVersion=1; action="PLAN_CUSTOMER_FOLDER_MERGE"; requestId="req-plan-g"; VaultRoot=$crashVault_G; pk_CLIENT=$uuidG; companyNameRaw="株式会社テストG" } | ConvertFrom-Json
 

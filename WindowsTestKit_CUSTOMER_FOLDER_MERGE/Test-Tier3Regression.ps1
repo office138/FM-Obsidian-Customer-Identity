@@ -297,8 +297,11 @@ try {
 
   $uuidL2 = "22222222-3333-4444-5555-666666666666"
   $pfxKeiyaku = Get-IconPrefix "契約"
+  $pfxJiko = Get-IconPrefix "事故"
   $noteA2 = Join-Path $fA2 ($pfxKeiyaku + "_テスト.md")
   [System.IO.File]::WriteAllLines($noteA2, @("---", "UUID: $uuidL2", "---", "# 契約"), [System.Text.Encoding]::UTF8)
+  $noteB2 = Join-Path $fB2 ($pfxJiko + "_テスト.md")
+  [System.IO.File]::WriteAllLines($noteB2, @("---", "UUID: $uuidL2", "---", "# 事故"), [System.Text.Encoding]::UTF8)
 
   # Generate planToken
   $planOutL2 = Invoke-PlanCustomerFolderMerge @{

@@ -9,6 +9,8 @@
 > **Repository canonical baseline promotion and live Vault deployment are separate governance events. No Vault deployment is authorized by this baseline promotion.**
 > 
 > **Changes to source do not automatically update this baseline.**
+>
+> **Production Vault deployment status (as of 2026-09-09): DEPLOYED.** Production Vault payload deployment has been completed under explicit Human authorization, following Gate 5 closure. The production payload SHA256 matches the canonical SHA256 recorded below. See §5 for details.
 
 ---
 
@@ -45,7 +47,7 @@
 | closureDisposition | PASS_J2_STEP11_REPOSITORY_CANONICAL_BASELINE_PROMOTED_VAULT_DEPLOYMENT_NOT_AUTHORIZED |
 | productionVaultTargetPath | C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1 |
 | effectiveDate | 2026-09-07 |
-| currentStatus | repository canonical / J-2 Step 11 MERGE_TARGET_FILE_EXISTS formally closed / Vault deployment not authorized by this baseline gate |
+| currentStatus | repository canonical / J-2 Step 11 MERGE_TARGET_FILE_EXISTS formally closed / Gate 5 formally closed by Human Authority / Production Vault payload deployment completed under explicit Human authorization (2026-09-09) |
 
 ---
 
@@ -63,3 +65,18 @@ The `productionVaultTargetPath` below designates the intended production deploym
 - **Canonical SHA256:** `39F497ACEA8471CFE1CCBB4E840DC301ECCA1D1499DBB0F01C93EC1C0C0A8014`
 - **Implementation Version:** `9.1.0`
 
+---
+
+## 5. Production Deployment & Gate 5 Status
+
+| Attribute | Value |
+|---|---|
+| gate5Status | FORMALLY_CLOSED_BY_HUMAN_AUTHORITY |
+| productionDeploymentStatus | DEPLOYED |
+| productionDeploymentDate | 2026-09-09 |
+| productionPayloadSha256 | 39F497ACEA8471CFE1CCBB4E840DC301ECCA1D1499DBB0F01C93EC1C0C0A8014 |
+| productionDeploymentAuthority | Human Authority (approved and completed following Gate 5 closure) |
+
+Production payload SHA256 at `C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1` was independently re-verified this session and matches the canonical SHA256 above exactly.
+
+**Closure basis and disclosure.** `Evidence_Gate5_FinalClosure_R2_20260908/GATE5_FINAL_R2_CORRECTIVE_ADDENDUM.md` §7 recorded Gate status as `GATE5_CLOSURE_NOT_YET_AUTHORIZED` as of 2026-09-08 23:54 JST, and named a fresh Claude Cowork / Genspark re-review as the next required step. Per Human Authority, that re-review was subsequently completed, its findings were formally adjudicated, and Gate 5 closure was explicitly approved by Human Authority; production Vault deployment was then approved and completed by Human Authority. No corresponding evidence artifact for this later sequence was independently located in this repository during this reconciliation task; this entry records the closure and deployment status as confirmed by Human Authority.

@@ -20,7 +20,7 @@ param(
   [string]$TestRoot = "",
   [string]$PowerShellExe = "powershell.exe",
   [string]$ProductionVaultRoot = "C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS",
-  [string]$ExpectedTargetSha256 = "3C37D4818D89050BC3F22740A40F3FDC42F714182F4131894A2359AB733AB059"
+  [string]$ExpectedTargetSha256 = "39F497ACEA8471CFE1CCBB4E840DC301ECCA1D1499DBB0F01C93EC1C0C0A8014"
 )
 
 if ([string]::IsNullOrWhiteSpace($TargetScript)) {
