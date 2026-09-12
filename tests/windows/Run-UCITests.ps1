@@ -702,10 +702,10 @@ function Test-15-InvalidYamlBadUuid {
   $r = Invoke-TargetScript $pay.B64
   $purity = Test-StdoutPurity $r.Stdout
   if (-not $purity.Ok) { Record-Result "15_UUID形式不正ノートの修復継続" $false $purity.Reason $r; return }
-  # 期待値更新(2026-07-29、YAML修復ポリシー変更により、本文境界が確定できるYAML形式不正
-  # ノートは無条件停止ではなくFileMaker権威値での修復対象となり、他に有効なUUID一致ノートが
-  # 同一フォルダにあるため処理は継続・成功する。実装バグではなく仕様変更のため期待値を更新する)。
-  $pass = ($purity.Obj.status -eq "OK") -and ($purity.Obj.code -eq "CUSTOMER_IDENTITY_UPDATED")
+  # 現行安全仕様: 同一顧客フォルダ内にUUID形式不正ノートが存在する場合、
+  # 自動修復や処理継続は行わず、fail-closedとして処理を停止する。
+  # status = NG, code = FOLDER_UUID_INVALID を期待値とする。
+  $pass = ($purity.Obj.status -eq "NG") -and ($purity.Obj.code -eq "FOLDER_UUID_INVALID")
   Record-Result "15_UUID形式不正ノートの修復継続" $pass "code=$($purity.Obj.code)" $r
 }
 

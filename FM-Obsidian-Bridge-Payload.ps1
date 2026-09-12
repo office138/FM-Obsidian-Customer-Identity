@@ -1,6 +1,14 @@
 ﻿<# =====================================================
 FM-Obsidian-Bridge-Payload.ps1
-Ver: 9.1.0 (2026-08-29) - Customer Folder Merge v1 Implementation
+Ver: 9.1.1 (2026-09-12) - Customer Folder Merge v1 Corrective Closure
+
+Update: 2026-09-12
+- Legacy customer-folder/name-match corrective fixes completed
+- Fail-closed invalid UUID handling finalized
+- APPLY promotion RelativePath corrective completed
+- Focused regression and full regression completed
+- FileMaker integration compatibility confirmed
+- Production deployment and final production verification completed
 
 【概要】
 FileMaker（顧客管理システム）から送信されたJSONペイロードを受け取り、
@@ -907,6 +915,25 @@ function Invoke-UpdateCustomerIdentity($payload) {
     }
   }
 
+  # ---- Legacy Name-Match Merge Corrective R1 (2026-09-09) ----
+  # matchedNotes.Count(VERIFIED件数)に関わらず、常にlegacy候補(REJECTED含む)を評価する。
+  # LEGACY>=1が検出された場合は、VERIFIED件数(0/1/2+)を問わず無条件で
+  # LEGACY_FOLDER_NEEDS_MIGRATIONとし、UUID優先の通常経路より常に優先する。
+  # LEGACY=0の場合のみ、既存のUUID優先経路(CUSTOMER_NOT_FOUND / 通常UCI経路 /
+  # UUID_FOLDER_CONFLICT)を維持する。
+  $canonicalFolderNameForLegacyCheck = Get-CanonicalCustomerFolderName $companyNameRaw $pkClient
+  $legacyLookupUci = Get-LegacyNameMatchCandidates $custRootUci $companyNameRaw $canonicalFolderNameForLegacyCheck $pkClient
+  if ($null -ne $legacyLookupUci.Error) {
+    Write-Output (New-UCIResponse $requestIdRaw "NG" $legacyLookupUci.Error $legacyLookupUci.Details)
+    return
+  }
+  $legacyFoldersUci = @($legacyLookupUci.LegacyFolders)
+  if ($legacyFoldersUci.Count -ge 1) {
+    $legacyNamesUci = ($legacyFoldersUci | ForEach-Object { $_.FolderName }) -join ";"
+    Write-Output (New-UCIResponse $requestIdRaw "NG" "LEGACY_FOLDER_NEEDS_MIGRATION" "顧客名が一致するフォルダが存在しますが、pk_CLIENTの完全UUID証拠がないため同一顧客と確定できません。手動確認が必要です。(Folders: $legacyNamesUci / pk_CLIENT: $pkClient)")
+    return
+  }
+
   if ($matchedNotes.Count -eq 0) {
     Write-Output (New-UCIResponse $requestIdRaw "NG" "CUSTOMER_NOT_FOUND" "指定されたUUIDに一致する顧客ノートが見つかりません。")
     return
@@ -1795,6 +1822,130 @@ function Get-FileSha256Raw {
   return [BitConverter]::ToString($hashBytes).Replace("-", "").ToUpperInvariant()
 }
 
+# ---- Legacy Name-Match Merge Corrective R2.1 (2026-09-09) / R2.2 (2026-09-09) Corrective A ----
+# legacy候補適格判定(Get-LegacyNameMatchCandidates)が使用する直下ファイル安全判定
+# (reparse point / ハードリンク / ADS、列挙失敗時フェイルクローズ)と全く同じ判定内容・
+# 同一エラーコード/メッセージ契約を、canonicalフォルダ自身に対して再利用するための
+# privateヘルパー。Get-LegacyNameMatchCandidates自体のロジック・挙動は一切変更しない。
+# R2.2: 直下ファイルのみを見る安全判定では、サブディレクトリ(および再解析ポイントの
+# サブディレクトリ)配下の危険なファイルを見逃す欠陥があったため、境界フェイルクローズの
+# 反復的(非再帰呼び出し・スタックオーバーフローなし)ツリー走査へ拡張する。
+# 再解析ポイントのディレクトリは、その配下へ列挙・降下する前に必ず拒否する
+# (Get-ChildItem -Recurseによる無条件降下は行わない)。
+# 呼び出し元: legacyMigrationConfirmedワンショット継続 (Invoke-CheckObsidianNotes) および
+#            TEMPORARY_CANONICAL_NO_UUID_CONTINUATION最終状態再検証 (Invoke-ApplyCustomerFolderMerge)
+# 戻り値(hashtable):
+#   Error          ... $null(安全) または既存契約のエラーコード文字列
+#   Details        ... $null または既存契約と同一形式の詳細メッセージ
+#   FileCount      ... ツリー全体(再帰)の通常ファイル数。0件なら「真に空」。
+#   DirectoryCount ... $FolderPath自身を含む、安全と確認された通常ディレクトリ数。
+function Test-CanonicalFolderContentSafetyForContinuation {
+  param([string]$FolderPath)
+  $result = @{ Error = $null; Details = $null; FileCount = 0; DirectoryCount = 0 }
+
+  # 反復的(スタックベースではなくキューベース)幅優先探索。再解析ポイントの
+  # ディレクトリは、キューへ入れる前(=その配下を列挙する前)に必ず拒否するため、
+  # 危険なサブツリーへ降下することはない。
+  $pendingDirs = [System.Collections.Generic.Queue[string]]::new()
+  $pendingDirs.Enqueue($FolderPath)
+
+  while ($pendingDirs.Count -gt 0) {
+    $currentDir = $pendingDirs.Dequeue()
+
+    try {
+      $dirItem = Get-Item -LiteralPath $currentDir -Force -ErrorAction Stop
+    } catch {
+      $errClass = Get-LockAcquisitionErrorClass $_.Exception
+      $result.Error = "MERGE_TOPOLOGY_ENUMERATION_FAILED"
+      $result.Details = "canonicalフォルダ配下のディレクトリ解決に失敗しました ($errClass): $($_.Exception.Message) (対象パス: $currentDir) 。アクセス権限や共有状態を確認・修正したうえで、FileMakerから再実行してください。"
+      return $result
+    }
+
+    if (-not $dirItem.PSIsContainer) {
+      $result.Error = "MERGE_TOPOLOGY_ENUMERATION_FAILED"
+      $result.Details = "canonicalフォルダ配下の対象が通常のディレクトリではありません(対象パス: $currentDir)。安全のため処理を中止しました。"
+      return $result
+    }
+    if (($dirItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+      $result.Error = "MERGE_REPARSE_POINT_UNSUPPORTED"
+      $result.Details = "canonicalフォルダ配下に再解析ポイント(ジャンクション/シンボリックリンク)のディレクトリが検出されました: $currentDir 。当該フォルダから再解析ポイントを削除してから、FileMakerから再実行してください。"
+      return $result
+    }
+
+    # ---- ディレクトリ自身のケースセンシティブ状態(直下ファイルだけでなく、
+    #      ツリー内の各ディレクトリごとに判定する) ----
+    $csCheck = Test-DirectoryCaseSensitiveSafe $currentDir
+    if ($csCheck.Status -eq "CASE_SENSITIVE") {
+      $result.Error = "MERGE_CASE_SENSITIVE_DIRECTORY_UNSUPPORTED"
+      $result.Details = "canonicalフォルダ配下のディレクトリが大文字/小文字を区別するディレクトリとして設定されています: $currentDir 。ケースセンシティブ設定を解除してから、FileMakerから再実行してください。"
+      return $result
+    }
+    if ($csCheck.Status -ne "CASE_INSENSITIVE") {
+      $result.Error = "MERGE_CASE_SENSITIVE_DIRECTORY_UNSUPPORTED"
+      $result.Details = "canonicalフォルダ配下のディレクトリのケースセンシティブ状態を安全に確認できませんでした(フェイルクローズ): $($csCheck.Details) (対象パス: $currentDir) 。ファイルシステム状態を確認・修正したうえで、FileMakerから再実行してください。"
+      return $result
+    }
+
+    $result.DirectoryCount++
+
+    try {
+      $children = @(Get-ChildItem -LiteralPath $currentDir -Force -ErrorAction Stop)
+    } catch {
+      $errClass = Get-LockAcquisitionErrorClass $_.Exception
+      $result.Error = "MERGE_TOPOLOGY_ENUMERATION_FAILED"
+      $result.Details = "canonicalフォルダ配下の列挙に失敗しました ($errClass): $($_.Exception.Message) (対象パス: $currentDir) 。アクセス権限や共有状態を確認・修正したうえで、FileMakerから再実行してください。"
+      return $result
+    }
+
+    foreach ($child in $children) {
+      if ($child.PSIsContainer) {
+        # サブディレクトリが再解析ポイントの場合は、キューへ入れて降下する前に
+        # ここで拒否する(危険なサブツリーへは絶対に列挙が及ばない)。
+        if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+          $result.Error = "MERGE_REPARSE_POINT_UNSUPPORTED"
+          $result.Details = "canonicalフォルダ配下のサブディレクトリに再解析ポイント(ジャンクション/シンボリックリンク)が検出されました: $($child.FullName) 。当該フォルダから再解析ポイントを削除してから、FileMakerから再実行してください。"
+          return $result
+        }
+        $pendingDirs.Enqueue($child.FullName)
+        continue
+      }
+
+      # ---- 通常ファイル(Get-LegacyNameMatchCandidatesの直下ファイル判定と同一契約) ----
+      if (($child.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        $result.Error = "MERGE_REPARSE_POINT_UNSUPPORTED"
+        $result.Details = "ファイル '$($child.FullName)' に再解析ポイントが検出されました。当該ファイルを別場所へ移動してから、FileMakerから再実行してください。"
+        return $result
+      }
+      $result.FileCount++
+      $linkCount = Get-FileHardLinkCountSafe $child.FullName
+      if ($linkCount -lt 0) {
+        $result.Error = "MERGE_HARDLINK_UNSUPPORTED"
+        $result.Details = "ファイル '$($child.FullName)' のハードリンク状態を安全に確認できませんでした(フェイルクローズ)。ファイル共有状態を確認・修正したうえで、FileMakerから再実行してください。"
+        return $result
+      }
+      if ($linkCount -gt 1) {
+        $result.Error = "MERGE_HARDLINK_UNSUPPORTED"
+        $result.Details = "ファイル '$($child.FullName)' はハードリンクです(リンク数: $linkCount)。当該ファイルのハードリンクを解消してから、FileMakerから再実行してください。"
+        return $result
+      }
+      $adsCheck = Test-FileAlternateDataStreamsSafe $child.FullName
+      if ($adsCheck.Status -eq "HAS_ADS") {
+        $streamSummary = ($adsCheck.NamedStreams -join ', ')
+        $result.Error = "MERGE_ALTERNATE_DATA_STREAM_UNSUPPORTED"
+        $result.Details = "ファイル '$($child.FullName)' に未対応の代替データストリーム(ADS)が検出されました ($streamSummary)。当該ストリームを削除してから、FileMakerから再実行してください。"
+        return $result
+      }
+      if ($adsCheck.Status -ne "CLEAN") {
+        $result.Error = "MERGE_ALTERNATE_DATA_STREAM_UNSUPPORTED"
+        $result.Details = "ファイル '$($child.FullName)' の代替データストリーム(ADS)状態を安全に確認できませんでした(フェイルクローズ): $($adsCheck.Details) 。ADS状態を確認・修正したうえで、FileMakerから再実行してください。"
+        return $result
+      }
+    }
+  }
+
+  return $result
+}
+
 function Open-CanonicalDirectoryGuard {
   param(
     [string]$DirectoryPath,
@@ -2125,6 +2276,302 @@ function New-MergePlanTokenV3 {
   return "PLAN-V3-$tokenHex"
 }
 
+# ========================================================
+# Legacy Name-Match Merge Corrective (2026-09-09) 追加:
+#
+# 完全UUID証拠を持たない「顧客名一致フォルダ」を LEGACY(安全に昇格可能な候補)と
+# REJECTED(何らかの安全違反があり自動処理してはならない)に分類する共有ヘルパー。
+# Invoke-UpdateCustomerIdentity と Get-CustomerMergeTopology の両方から呼び出される。
+#
+# REJECTED判定は必ず $result.Error を設定して即時returnする(候補discoveryから
+# 黙って消えることを禁止する要件のため)。呼び出し側はこの $result.Error を
+# 既存のNG応答経路へそのまま渡すことができる(既存のFOLDER_UUID_MIXED等の
+# 応答コードをそのまま再利用しており、新規コードは追加していない)。
+#
+# 新規の会社名正規化・UUID形式判定・noteType判定ロジックは追加せず、既存の
+# Normalize-ForMatch / Get-UciFolderEvidence / Get-UciKnownPrefixMap /
+# Get-NoteNameNormForUci / Get-UciUuidSuffix / Get-FileHardLinkCountSafe /
+# Test-FileAlternateDataStreamsSafe / Test-DirectoryCaseSensitiveSafe /
+# Get-FileSha256Raw をそのまま再利用する。
+# ========================================================
+function Get-LegacyNameMatchCandidates {
+  param(
+    [string]$CustRoot,
+    [string]$CompanyNameRaw,
+    [string]$CanonicalFolderName,
+    [string]$Uuid
+  )
+  $result = @{ Error = $null; Details = $null; LegacyFolders = @() }
+
+  $custRootInfo = Get-Item -LiteralPath $CustRoot
+  if (($custRootInfo.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+    $result.Error = "MERGE_REPARSE_POINT_UNSUPPORTED"
+    $result.Details = "顧客ルートフォルダ自体が再解析ポイント(ジャンクション/シンボリックリンク)です: $CustRoot 。当該フォルダから再解析ポイントを削除して通常フォルダへ置き換えたうえで、FileMakerから再実行してください。"
+    return $result
+  }
+  $csCheck = Test-DirectoryCaseSensitiveSafe $CustRoot
+  if ($csCheck.Status -eq "CASE_SENSITIVE") {
+    $result.Error = "MERGE_CASE_SENSITIVE_DIRECTORY_UNSUPPORTED"
+    $result.Details = "顧客ルートフォルダが大文字/小文字を区別するディレクトリとして設定されています: $CustRoot 。ケースセンシティブ設定を解除してから、FileMakerから再実行してください。"
+    return $result
+  }
+  if ($csCheck.Status -ne "CASE_INSENSITIVE") {
+    $result.Error = "MERGE_CASE_SENSITIVE_DIRECTORY_UNSUPPORTED"
+    $result.Details = "顧客ルートフォルダのケースセンシティブ状態を安全に確認できませんでした(フェイルクローズ): $($csCheck.Details) 。ファイルシステム状態を確認・修正したうえで、FileMakerから再実行してください。"
+    return $result
+  }
+
+  $normalizedTarget = Normalize-ForMatch $CompanyNameRaw
+  $prefixMap = Get-UciKnownPrefixMap
+
+  try {
+    $dirs = Get-ChildItem -LiteralPath $CustRoot -Directory -Force -ErrorAction Stop
+  } catch {
+    $errClass = Get-LockAcquisitionErrorClass $_.Exception
+    $result.Error = "MERGE_TOPOLOGY_ENUMERATION_FAILED"
+    $result.Details = "顧客ルートフォルダの列挙に失敗しました ($errClass): $($_.Exception.Message) (対象パス: $CustRoot) 。アクセス権限や共有状態を確認・修正したうえで、FileMakerから再実行してください。"
+    return $result
+  }
+
+  foreach ($dir in $dirs) {
+    if ($dir.Name -eq $CanonicalFolderName) { continue }
+    if (-not [string]::Equals((Normalize-ForMatch $dir.Name), $normalizedTarget, [System.StringComparison]::OrdinalIgnoreCase)) { continue }
+
+    if (($dir.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+      $result.Error = "MERGE_REPARSE_POINT_UNSUPPORTED"
+      $result.Details = "顧客フォルダ内に再解析ポイント(ジャンクション/シンボリックリンク)が検出されました: $($dir.FullName) 。当該フォルダから再解析ポイントを削除してから、FileMakerから再実行してください。"
+      return $result
+    }
+
+    # ---- evidence判定(既存Get-UciFolderEvidenceを再利用。優先順位もそのまま) ----
+    $evidence = Get-UciFolderEvidence $dir.FullName $Uuid
+    if ($evidence.state -eq "InvalidYaml") {
+      $result.Error = "YAML_BODY_BOUNDARY_UNRESOLVED"
+      $result.Details = "顧客名が一致するフォルダ内にYAML本文境界(frontmatterの終了行---)が判定できないノートがあります。本文喪失のおそれがあるため処理を中止しました。(Folder: $($dir.Name) / Path: $($evidence.detailPath))。当該ノートのYAML frontmatterを修復してから、FileMakerから再実行してください。"
+      return $result
+    }
+    if ($evidence.state -eq "Conflict") {
+      $result.Error = "FOLDER_UUID_MIXED"
+      $result.Details = "顧客名が一致するフォルダ内に、FileMaker側pk_CLIENTと異なるUUIDを持つノートが混在しています(理由: 別顧客または誤統合の可能性)。(Folder: $($dir.Name) / Path: $($evidence.detailPath) / FileMaker側pk_CLIENT: $Uuid / 検出されたUUID: $($evidence.detailValue))。安全のため処理を中止しました。対象フォルダ・ノートが本当に同一顧客のものか、FileMaker側で確認してください。検出されたUUIDを現在のpk_CLIENTへ強制的に上書きしないでください。同一顧客と確認できない場合は、フォルダ/ノートを分離するなど手動でクリーンアップしたうえで、FileMakerから再実行してください。"
+      return $result
+    }
+    if ($evidence.state -eq "InvalidUuid") {
+      $result.Error = "FOLDER_UUID_INVALID"
+      $result.Details = "顧客名が一致するフォルダ内にUUID形式が不正なノートが残存しています。(Folder: $($dir.Name) / Path: $($evidence.detailPath) / Value: $($evidence.detailValue))。安全のため処理を中止しました。当該ノートのYAML frontmatter内のUUID値を正しい形式に修正するか、値を空にしてから、FileMakerから再実行してください。"
+      return $result
+    }
+    if ($evidence.state -eq "Matched") {
+      # 完全UUID証拠を既に持つ(VERIFIED)。LEGACY候補ではない。
+      continue
+    }
+    # ここに到達するのは evidence.state -eq "NoEvidence" のみ。
+
+    try {
+      $files = Get-ChildItem -LiteralPath $dir.FullName -File -Force -ErrorAction Stop
+    } catch {
+      $errClass = Get-LockAcquisitionErrorClass $_.Exception
+      $result.Error = "MERGE_TOPOLOGY_ENUMERATION_FAILED"
+      $result.Details = "顧客フォルダ内ファイルの列挙に失敗しました ($errClass): $($_.Exception.Message) (対象パス: $($dir.FullName)) 。アクセス権限や共有状態を確認・修正したうえで、FileMakerから再実行してください。"
+      return $result
+    }
+
+    $promotable = @()
+    $promotableNoteTypes = @{}
+    $unmanagedFiles = @()
+
+    foreach ($file in $files) {
+      if (($file.Attributes -band [System.IO.FileAttributes]::ReparsePoint)) {
+        $result.Error = "MERGE_REPARSE_POINT_UNSUPPORTED"
+        $result.Details = "ファイル '$($file.FullName)' に再解析ポイントが検出されました。当該ファイルを別場所へ移動してから、FileMakerから再実行してください。"
+        return $result
+      }
+      $linkCount = Get-FileHardLinkCountSafe $file.FullName
+      if ($linkCount -lt 0) {
+        $result.Error = "MERGE_HARDLINK_UNSUPPORTED"
+        $result.Details = "ファイル '$($file.FullName)' のハードリンク状態を安全に確認できませんでした(フェイルクローズ)。ファイル共有状態を確認・修正したうえで、FileMakerから再実行してください。"
+        return $result
+      }
+      if ($linkCount -gt 1) {
+        $result.Error = "MERGE_HARDLINK_UNSUPPORTED"
+        $result.Details = "ファイル '$($file.FullName)' はハードリンクです(リンク数: $linkCount)。当該ファイルのハードリンクを解消してから、FileMakerから再実行してください。"
+        return $result
+      }
+      $adsCheck = Test-FileAlternateDataStreamsSafe $file.FullName
+      if ($adsCheck.Status -eq "HAS_ADS") {
+        $streamSummary = ($adsCheck.NamedStreams -join ', ')
+        $result.Error = "MERGE_ALTERNATE_DATA_STREAM_UNSUPPORTED"
+        $result.Details = "ファイル '$($file.FullName)' に未対応の代替データストリーム(ADS)が検出されました ($streamSummary)。当該ストリームを削除してから、FileMakerから再実行してください。"
+        return $result
+      }
+      if ($adsCheck.Status -ne "CLEAN") {
+        $result.Error = "MERGE_ALTERNATE_DATA_STREAM_UNSUPPORTED"
+        $result.Details = "ファイル '$($file.FullName)' の代替データストリーム(ADS)状態を安全に確認できませんでした(フェイルクローズ): $($adsCheck.Details) 。ADS状態を確認・修正したうえで、FileMakerから再実行してください。"
+        return $result
+      }
+
+      if (-not $file.Name.EndsWith(".md", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $unmanagedFiles += @{ FileName = $file.Name; FullPath = $file.FullName; SizeBytes = $file.Length }
+        continue
+      }
+
+      $hdr = @(Get-YamlHeaderLines $file.FullName)
+      if ($null -eq $hdr -or $hdr.Count -eq 0) {
+        # frontmatterが無い、または(本来はGet-UciFolderEvidenceで既に検出されているはずの)
+        # 本文境界未解決。念のためここでも自動昇格対象からは除外し、unmanagedのまま温存する。
+        $unmanagedFiles += @{ FileName = $file.Name; FullPath = $file.FullName; SizeBytes = $file.Length }
+        continue
+      }
+      $existingUuid = Get-YamlScalarValue $hdr "UUID:"
+      if (-not [string]::IsNullOrWhiteSpace($existingUuid)) {
+        # このフォルダはNoEvidence状態のはずだが、多重防御としてここでも確認する。
+        $unmanagedFiles += @{ FileName = $file.Name; FullPath = $file.FullName; SizeBytes = $file.Length }
+        continue
+      }
+
+      $matchedPrefix = $null
+      foreach ($k in $prefixMap.Keys) {
+        if ($file.Name.StartsWith("${k}_", [System.StringComparison]::Ordinal)) { $matchedPrefix = $k; break }
+      }
+      if ($null -eq $matchedPrefix) {
+        # 管理プレフィックス外・noteType判定不能なMarkdown。自動昇格対象にしない。
+        $unmanagedFiles += @{ FileName = $file.Name; FullPath = $file.FullName; SizeBytes = $file.Length }
+        continue
+      }
+
+      $nType = $prefixMap[$matchedPrefix]
+      if ($promotableNoteTypes.ContainsKey($nType)) {
+        $result.Error = "DUPLICATE_NOTE_TYPE"
+        $result.Details = "フォルダ '$($dir.Name)' 内にUUID未設定の同一noteType('$nType')の昇格候補ノートが複数存在します: $($file.Name)"
+        return $result
+      }
+      [void]$promotableNoteTypes.Add($nType, $true)
+
+      $noteNameNorm = Get-NoteNameNormForUci $CompanyNameRaw $nType
+      $targetFileName = "${matchedPrefix}_${noteNameNorm}$(Get-UciUuidSuffix $Uuid).md"
+
+      $promotable += @{
+        FileName       = $file.Name
+        FullPath       = $file.FullName
+        NoteType       = $nType
+        Prefix         = $matchedPrefix
+        SizeBytes      = $file.Length
+        OriginalSha256 = (Get-FileSha256Raw $file.FullName)
+        TargetFileName = $targetFileName
+      }
+    }
+
+    $result.LegacyFolders += @{
+      DirectoryInfo   = $dir
+      FolderName      = $dir.Name
+      FullPath        = $dir.FullName
+      PromotableNotes = $promotable
+      UnmanagedFiles  = $unmanagedFiles
+    }
+  }
+
+  return $result
+}
+
+# Legacy Promotable Note の内容へ、既存frontmatterの構造を保ったまま
+# "UUID: <pk_CLIENT>" 行のみを追加/上書きする。既存のUpdate-Yaml-Robustとは異なり、
+# tags/ランク/総合計保険料等の再構築は行わない(MERGE PLAN/APPLYペイロードには
+# RANK/CEO/RUBYが含まれず、それらを推測・上書きすることはできないため)。
+# UUIDキーが存在しない場合はheader末尾に新規追加し、存在するが空値の場合はその行だけを
+# 書き換える。header/body内の他の行、行区切り規則(既存Update-Yaml-Robust同様CRLF)は
+# 一切変更しない。呼び出し前提として、$FilePathはfrontmatterが存在し(header非空)、かつ
+# UUIDキーが存在しないか空値であることを、呼び出し側(Get-LegacyNameMatchCandidatesが
+# 既に確認済みのPromotableNotes)が保証する。前提が崩れている場合は例外をthrowし、
+# 呼び出し側の既存例外処理(APPLYの try/catch → ロールバック経路)に委ねる。
+function New-LegacyPromotedNoteBytes {
+  param(
+    [string]$FilePath,
+    [string]$Uuid
+  )
+  # ---- Legacy Name-Match Merge Corrective R1 (2026-09-09) バイト保存昇格 ----
+  # 元のBOM有無・CRLF/LF構造・本文バイト・無関係なYAML行・末尾改行の有無を
+  # 一切変更しない。唯一許容される変更は、(a) YAML frontmatter内へ
+  # "UUID: <pk_CLIENT>" 行を新規挿入する、または (b) 既存の空値 "UUID:" 行の
+  # 値部分を置換する、のいずれかのみ。
+  $rawBytes = [System.IO.File]::ReadAllBytes($FilePath)
+  $hasBom = ($rawBytes.Length -ge 3 -and $rawBytes[0] -eq 0xEF -and $rawBytes[1] -eq 0xBB -and $rawBytes[2] -eq 0xBF)
+  [byte[]]$bomBytes = @(if ($hasBom) { $rawBytes[0..2] } else { @() })
+  $contentBytes = if ($hasBom) { $rawBytes[3..($rawBytes.Length-1)] } else { $rawBytes }
+  $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+  $content = $utf8NoBom.GetString($contentBytes)
+
+  # 行区切り(EOL)種別を保持したまま行分割する(各行のEOLをCRLF/LF/なし
+  # (最終行)で個別に記録する)。
+  $lineList = [System.Collections.Generic.List[object]]::new()
+  $start = 0
+  $i = 0
+  while ($i -lt $content.Length) {
+    if ($content[$i] -eq "`n") {
+      if ($i -gt $start -and $content[$i-1] -eq "`r") {
+        $lineList.Add([PSCustomObject]@{ Text = $content.Substring($start, ($i-1-$start)); Eol = "`r`n" })
+      } else {
+        $lineList.Add([PSCustomObject]@{ Text = $content.Substring($start, ($i-$start)); Eol = "`n" })
+      }
+      $start = $i + 1
+    }
+    $i++
+  }
+  if ($start -lt $content.Length -or $content.Length -eq 0) {
+    $lineList.Add([PSCustomObject]@{ Text = $content.Substring($start); Eol = "" })
+  }
+
+  if ($lineList.Count -eq 0 -or $lineList[0].Text.Trim() -ne "---") {
+    throw "Legacy Promotable Note昇格の前提(frontmatter存在)が崩れています: $FilePath"
+  }
+  $endIdx = -1
+  for ($j = 1; $j -lt $lineList.Count; $j++) {
+    if ($lineList[$j].Text.Trim() -eq "---") { $endIdx = $j; break }
+  }
+  if ($endIdx -eq -1) {
+    throw "Legacy Promotable Note昇格の前提(frontmatter境界)が崩れています: $FilePath"
+  }
+
+  $uuidLineIdx = -1
+  for ($j = 1; $j -lt $endIdx; $j++) {
+    if ($null -ne $lineList[$j].Text -and $lineList[$j].Text.Trim().StartsWith("UUID:")) { $uuidLineIdx = $j; break }
+  }
+  $newUuidText = "UUID: $Uuid"
+  if ($uuidLineIdx -ge 0) {
+    $existingVal = ($lineList[$uuidLineIdx].Text.Trim().Substring(5)).Trim()
+    if (-not [string]::IsNullOrWhiteSpace($existingVal)) {
+      throw "Legacy Promotable Note昇格の前提(UUID未設定)が崩れています: $FilePath"
+    }
+    # ---- Legacy Name-Match Merge Corrective R2 (2026-09-09) Corrective E ----
+    # 既存の空値UUID:行はバイト単位で完全保持し、UUID値バイトのみを挿入する。行を
+    # 再構築せず、元のTextへ追記するのみ(先頭の空白・インデント・コロン・既存の
+    # 空白バイトは一切変更・削除・並べ替えしない)。当該行のEOLは変更しない。
+    $uuidKeyIdx = $lineList[$uuidLineIdx].Text.IndexOf("UUID:")
+    $afterUuidKeyText = $lineList[$uuidLineIdx].Text.Substring($uuidKeyIdx + 5)
+    if ($afterUuidKeyText.Length -eq 0) {
+      # コロン直後に何も無い場合のみ、YAML値区切りとして半角スペース1個を追加する。
+      $preservedUuidLineText = $lineList[$uuidLineIdx].Text + " " + $Uuid
+    } else {
+      # 既存の空白バイトはそのまま保持し、その末尾にUUID値のみを追記する。
+      $preservedUuidLineText = $lineList[$uuidLineIdx].Text + $Uuid
+    }
+    $lineList[$uuidLineIdx] = [PSCustomObject]@{ Text = $preservedUuidLineText; Eol = $lineList[$uuidLineIdx].Eol }
+  } else {
+    # (a) 新規UUID行をheader末尾(区切り"---"の直前)へ挿入する。
+    # 挿入行のEOLは直前行(header最終行、無ければ開始"---"行)のEOLに合わせる。
+    $precedingEol = $lineList[$endIdx - 1].Eol
+    if ([string]::IsNullOrEmpty($precedingEol)) { $precedingEol = "`r`n" }
+    $lineList.Insert($endIdx, [PSCustomObject]@{ Text = $newUuidText; Eol = $precedingEol })
+  }
+
+  $sb = [System.Text.StringBuilder]::new()
+  foreach ($ln in $lineList) { [void]$sb.Append($ln.Text).Append($ln.Eol) }
+  $newContentBytes = $utf8NoBom.GetBytes($sb.ToString())
+
+  if ($bomBytes.Count -gt 0) {
+    return [byte[]]($bomBytes + $newContentBytes)
+  }
+  return [byte[]]$newContentBytes
+}
+
 function Get-CustomerMergeTopology {
   param(
     [string]$VaultRoot,
@@ -2231,7 +2678,7 @@ function Get-CustomerMergeTopology {
           $fileUuid = Get-YamlScalarValue $headerLines "UUID:"
           if (-not [string]::IsNullOrWhiteSpace($fileUuid)) {
             if (-not (Test-UciUuidFormat $fileUuid)) {
-              return @{ Error = "FOLDER_UUID_INVALID"; Details = "ファイル '$($file.FullName)' のYAML UUID形式が不正です: $fileUuid" }
+              return @{ Error = "FOLDER_UUID_INVALID"; Details = "ファイル '$($file.FullName)' のYAML UUID形式が不正です: $fileUuid。安全のため処理を中止しました。当該ノートのYAML frontmatter内のUUID値を正しい形式に修正するか、値を空にしてから、FileMakerから再実行してください。" }
             }
             [void]$folderUuids.Add($fileUuid.Trim().ToUpperInvariant())
 
@@ -2329,17 +2776,29 @@ function Get-CustomerMergeTopology {
     }
   }
 
-  if ($matchedFolders.Count -eq 0) {
-    return @{ Error = "CUSTOMER_NOT_FOUND"; Details = "指定されたUUID ($Uuid) の証拠を持つ顧客フォルダが見つかりません。" }
-  }
-
   $canonicalFolderName = Get-CanonicalCustomerFolderName $CompanyNameRaw $Uuid
   $canonicalFolderFullPath = Join-Path $custRoot $canonicalFolderName
+
+  # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+  # 完全UUID証拠を持つフォルダ(VerifiedFolders = $matchedFolders)に加えて、
+  # 名前一致のみでUUID証拠を持たないフォルダ(LegacyFolders)を検出する。
+  # REJECTED(安全違反)が見つかった場合は既存のFOLDER_UUID_MIXED等のコードで
+  # 即時Fail-Closedする(候補discoveryから黙って消えることを禁止する要件のため)。
+  $legacyLookup = Get-LegacyNameMatchCandidates $custRoot $CompanyNameRaw $canonicalFolderName $Uuid
+  if ($null -ne $legacyLookup.Error) {
+    return @{ Error = $legacyLookup.Error; Details = $legacyLookup.Details }
+  }
+  $legacyFolders = @($legacyLookup.LegacyFolders)
+
+  if ($matchedFolders.Count -eq 0 -and $legacyFolders.Count -eq 0) {
+    return @{ Error = "CUSTOMER_NOT_FOUND"; Details = "指定されたUUID ($Uuid) の証拠を持つ顧客フォルダが見つかりません。" }
+  }
 
   return @{
     Error = $null
     CustRoot = $custRoot
     MatchedFolders = $matchedFolders
+    LegacyFolders = $legacyFolders
     CanonicalFolderName = $canonicalFolderName
     CanonicalFolderFullPath = $canonicalFolderFullPath
     IsConflict = ($matchedFolders.Count -ge 2)
@@ -3224,7 +3683,8 @@ function Invoke-PlanCustomerFolderMerge {
       return
     }
 
-    if ($topo.MatchedFolders.Count -eq 1) {
+    $legacyFoldersPlan = @($topo.LegacyFolders)
+    if ($topo.MatchedFolders.Count -eq 1 -and $legacyFoldersPlan.Count -eq 0) {
       Write-Output (New-MergeResponse $reqId "OK" "MERGE_NOT_REQUIRED" "マージ対象フォルダが1件のみのため、統合は不要です。" -Extra @{ matchedFolderCount = 1 })
       return
     }
@@ -3260,7 +3720,36 @@ function Invoke-PlanCustomerFolderMerge {
       }
     }
 
-    $token = New-MergePlanTokenV3 $vaultRoot $uuid $canonicalFolderName $allSourceFolderNames $allManagedNotes
+    # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+    # LegacyFolders内のPromotableNotes(UUID未設定・昇格候補)も、VerifiedFoldersの
+    # ManagedNotesと同じ$globalNoteTypesで重複検出する(既存DUPLICATE_NOTE_TYPEを再利用)。
+    # PlanToken V3への束縛は「現時点(昇格前)のディスク上の実バイト」に対して行う
+    # (New-MergePlanTokenV3のアルゴリズム自体は変更しない)。これにより、Plan生成後に
+    # 昇格対象ノートの内容が変化した場合もAPPLY時のライブ再計算でPLAN_TOKEN_MISMATCHとして
+    # 既存の仕組みのまま検出される。
+    $allPromotions = @()
+    foreach ($lf in $legacyFoldersPlan) {
+      $allSourceFolderNames += $lf.FolderName
+      foreach ($pn in $lf.PromotableNotes) {
+        if ($globalNoteTypes.Contains($pn.NoteType)) {
+          Write-Output (New-MergeResponse $reqId "NG" "DUPLICATE_NOTE_TYPE" "マージ対象フォルダ間で同一noteType('$($pn.NoteType)')のノート(昇格候補含む)が重複しています: $($pn.FileName)")
+          return
+        }
+        [void]$globalNoteTypes.Add($pn.NoteType)
+        $allPromotions += @{
+          FileName = $pn.FileName
+          FullPath = $pn.FullPath
+          RelativePath = Get-RelPath $vaultRoot $pn.FullPath
+          NoteType = $pn.NoteType
+          SizeBytes = $pn.SizeBytes
+          Sha256 = $pn.OriginalSha256
+          TargetFileName = $pn.TargetFileName
+        }
+      }
+    }
+    $allManagedNotesForToken = @($allManagedNotes) + @($allPromotions)
+
+    $token = New-MergePlanTokenV3 $vaultRoot $uuid $canonicalFolderName $allSourceFolderNames $allManagedNotesForToken
 
     $moves = @()
     foreach ($n in $allManagedNotes) {
@@ -3274,11 +3763,47 @@ function Invoke-PlanCustomerFolderMerge {
       }
     }
 
+    $promotions = @()
+    foreach ($pn in $allPromotions) {
+      $promotions += [ordered]@{
+        sourcePath = $pn.FullPath
+        noteType = $pn.NoteType
+        sizeBytes = $pn.SizeBytes
+        sha256 = $pn.Sha256
+        targetFileName = $pn.TargetFileName
+      }
+    }
+
+    $operationMode = if ($topo.MatchedFolders.Count -eq 0 -and $legacyFoldersPlan.Count -eq 1) { "LEGACY_RENAME" } else { "MERGE" }
+
+    # ---- Legacy Name-Match Merge Corrective R2 (2026-09-09) Corrective A ----
+    # PLAN候補の種別(VERIFIED/LEGACY)を明示する追加フィールド。既存の
+    # sourceFolders/moves/operationMode/promotions/PlanToken V3はそのまま維持し、
+    # スキーマバージョンも変更しない。candidateTypeはmoves/promotionsからの推測ではなく、
+    # $topo.MatchedFolders(VERIFIED)と$legacyFoldersPlan(LEGACY)から直接構築する。
+    $candidates = @()
+    foreach ($f in $topo.MatchedFolders) {
+      $candidates += [ordered]@{
+        folderName = $f.FolderName
+        candidateType = "VERIFIED"
+      }
+    }
+    foreach ($lf in $legacyFoldersPlan) {
+      $candidates += [ordered]@{
+        folderName = $lf.FolderName
+        candidateType = "LEGACY"
+      }
+    }
+
     $planData = [ordered]@{
       canonicalFolderName = $canonicalFolderName
       sourceFolders = $allSourceFolderNames
+      candidates = $candidates
       managedFilesCount = $allManagedNotes.Count
       moves = $moves
+      operationMode = $operationMode
+      promotableFilesCount = $allPromotions.Count
+      promotions = $promotions
     }
 
     Write-Output (New-MergeResponse $reqId "OK" "MERGE_PLAN_READY" "マージ計画を正常に生成しました。" -extra @{ planToken = $token; plan = $planData })
@@ -3337,6 +3862,15 @@ function Invoke-ApplyCustomerFolderMerge {
   $warning = $null
   $topo = $null
   $allManagedNotes = @()
+  $allPromotions = @()
+  # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+  # Set-StrictMode -Version Latest下では、catchブロックが到達しうる時点より前で
+  # tryブロックが失敗した場合に未初期化変数を参照すると例外が発生し、catch自体が
+  # 失敗して未処理例外として外側へ伝播してしまう。$topo/$allManagedNotes/$allPromotionsの
+  # 既存の事前初期化パターンに倣い、catchブロックから参照する$backupDirと
+  # $promotedStagedPathsForCleanupもここで確実に初期化しておく。
+  $backupDir = $null
+  $promotedStagedPathsForCleanup = @()
 
   $lock = $null
   try {
@@ -3414,7 +3948,9 @@ function Invoke-ApplyCustomerFolderMerge {
       return
     }
 
-    if ($topo.MatchedFolders.Count -eq 1) {
+    # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+    $legacyFoldersApply = @($topo.LegacyFolders)
+    if ($topo.MatchedFolders.Count -eq 1 -and $legacyFoldersApply.Count -eq 0) {
       Write-Output (New-MergeResponse $reqId "OK" "MERGE_NOT_REQUIRED" "マージ対象フォルダが1件のみのため、統合は不要です。" -Extra @{ matchedFolderCount = 1 })
       return
     }
@@ -3449,7 +3985,37 @@ function Invoke-ApplyCustomerFolderMerge {
       }
     }
 
-    $liveToken = New-MergePlanTokenV3 $vaultRoot $uuid $topo.CanonicalFolderName $allSourceFolderNames $allManagedNotes
+    # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+    # Planの重複検出(DUPLICATE_NOTE_TYPE)と対称的に、APPLYはライブ再列挙結果に対して
+    # 既存のNOTE_TYPE_COLLISIONで衝突検出する。
+    $allPromotions = @()
+    foreach ($lf in $legacyFoldersApply) {
+      $allSourceFolderNames += $lf.FolderName
+      foreach ($pn in $lf.PromotableNotes) {
+        if ($globalNoteTypes.Contains($pn.NoteType)) {
+          Write-Output (New-MergeResponse $reqId "NG" "NOTE_TYPE_COLLISION" "複数フォルダ間で同一noteType '$($pn.NoteType)' が衝突しています(昇格候補含む)。")
+          return
+        }
+        [void]$globalNoteTypes.Add($pn.NoteType)
+        $allPromotions += @{
+          FileName = $pn.FileName
+          FullPath = $pn.FullPath
+          RelativePath = Get-RelPath $vaultRoot $pn.FullPath
+          NoteType = $pn.NoteType
+          SizeBytes = $pn.SizeBytes
+          Sha256 = $pn.OriginalSha256
+          TargetFileName = $pn.TargetFileName
+          LegacyFolderFullPath = $lf.FullPath
+        }
+      }
+    }
+
+    $applyCase = if ($canonicalState -eq "MATCHED_EXISTING") { "A" }
+                 elseif ($topo.MatchedFolders.Count -eq 0 -and $legacyFoldersApply.Count -eq 1) { "C" }
+                 else { "B" }
+
+    $allManagedNotesForToken = @($allManagedNotes) + @($allPromotions)
+    $liveToken = New-MergePlanTokenV3 $vaultRoot $uuid $topo.CanonicalFolderName $allSourceFolderNames $allManagedNotesForToken
     if ($reqToken -ne $liveToken) {
       Write-Output (New-MergeResponse $reqId "NG" "PLAN_TOKEN_MISMATCH" "フォルダ構成またはノート構成がプラン作成時から変更されています。")
       return
@@ -3469,6 +4035,28 @@ function Invoke-ApplyCustomerFolderMerge {
       }
     }
 
+    # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+    # Case A/C(昇格ノートが最終的にファイル単位でCanonicalまたはlegacyフォルダ直下に
+    # 配置される場合)は、既存のResolve-MergeTargetOccupancyStateをそのまま再利用して
+    # 昇格先ファイル名の占有プリフライトを行う。Case B(フォルダ丸ごとMOVE_DIRECTORY)は
+    # $allManagedNotesと同様、まず$stagingDir配下に集約されてからフォルダ単位で移動される
+    # ため個別チェック不要(既存Case Bの前提と同一)。
+    if ($applyCase -ne "B") {
+      foreach ($pm in $allPromotions) {
+        $promTargetDir = if ($applyCase -eq "A") { $topo.CanonicalFolderFullPath } else { $pm.LegacyFolderFullPath }
+        $promTargetPath = Join-Path $promTargetDir $pm.TargetFileName
+        $occState = Resolve-MergeTargetOccupancyState -TargetPath $promTargetPath -SourcePath $pm.FullPath
+        if ($occState -eq "OCCUPIED") {
+          Write-Output (New-MergeResponse $reqId "NG" "MERGE_TARGET_FILE_EXISTS" "マージ先に同名ファイルまたはオブジェクトが既に存在します: $promTargetPath")
+          return
+        }
+        elseif ($occState -eq "INSPECTION_FAILED") {
+          Write-Output (New-MergeResponse $reqId "NG" "MERGE_OPERATION_FAILED" "マージ先パスの検査に失敗しました: $promTargetPath")
+          return
+        }
+      }
+    }
+
     $inProgressData = @{
       txId = $txId
       planToken = $liveToken
@@ -3483,6 +4071,19 @@ function Invoke-ApplyCustomerFolderMerge {
     $stagingInfo = New-MergeStagingOwnershipSafe $txDir $txId
     $stagingDir = $stagingInfo.StagingDir
     $ownerToken = $stagingInfo.OwnerToken
+
+    # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+    # Legacy Promotable Noteの原本退避専用の排他バックアップディレクトリ。$stagingDirとは
+    # 別系統に置くのは、Case B(フォルダ丸ごとMOVE_DIRECTORY)実行時にバックアップまで
+    # Canonicalフォルダへ巻き込まれないようにするため。
+    $backupDir = $null
+    if ($allPromotions.Count -ge 1) {
+      $backupDir = Join-Path $txDir "legacybackup_$txId"
+      $createBackupRes = New-Win32ExclusiveDirectory $backupDir
+      if (-not $createBackupRes.Success) {
+        throw "Legacy昇格用バックアップディレクトリの作成に失敗しました (Win32Error: $($createBackupRes.ErrorCode)): $backupDir"
+      }
+    }
 
     $journalData = [ordered]@{
       txId = $txId
@@ -3536,13 +4137,98 @@ function Invoke-ApplyCustomerFolderMerge {
       [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
     }
 
+    # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+    # B-4' Mutation Phase 1.5: Legacy Promotable Noteの原本退避(既存MOVE_FILEをそのまま
+    # 再利用)+ 昇格後バイトの非ジャーナル生成(New-MergeStagingOwnershipSafeの所有権
+    # マーカー書き込みと同一の耐久書き込みパターン: CreateNew + Flush(true) + 読み戻し検証)。
+    # 原本は「未改変のまま」$backupDirへ移動されるのみで、書き換えは常に新規パスへの
+    # 新規作成としてのみ行われる(既存パスの上書きは一切行わない)。
+    # $promotedStagedPathsForCleanupは、非ジャーナルの昇格済みステージングファイルを追跡し、
+    # 万一のロールバック時に既存のComplete-RollbackEvidenceCleanup(rollback engineの一部
+    # につき本タスクでは変更しない)の「ステージングディレクトリが空であること」という
+    # 前提を、Invoke-ApplyCustomerFolderMerge自身のベストエフォート後始末で満たすために使う。
+    $promotedStagedPathsForCleanup = @()
+    foreach ($pm in $allPromotions) {
+      $origBackupPath = Join-Path $backupDir ("orig_{0}_{1}" -f $seq, $pm.FileName)
+
+      $journalEntry = [ordered]@{
+        Seq = $seq++
+        OpType = "MOVE_FILE"
+        SourcePath = $pm.FullPath
+        DestPath = $origBackupPath
+        ExpectedSha256 = $pm.Sha256
+        ExpectedSizeBytes = $pm.SizeBytes
+        OwnerToken = $null
+        State = "PENDING"
+        Timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+      }
+      $journalData.entries = @($journalData.entries) + $journalEntry
+      [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+
+      Invoke-TestCrashHook "D"
+
+      [System.IO.File]::Move($pm.FullPath, $origBackupPath)
+
+      $postBackupSha = Get-FileSha256Raw $origBackupPath
+      $postBackupSize = (Get-Item -LiteralPath $origBackupPath).Length
+      if ($postBackupSha -ne $pm.Sha256 -or $postBackupSize -ne $pm.SizeBytes) {
+        throw "Legacy昇格原本のバックアップ移動後バイト検証に失敗しました: $origBackupPath"
+      }
+
+      Invoke-TestCrashHook "E"
+
+      $journalEntry.State = "COMPLETED"
+      [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+
+      # 非ジャーナル生成: バックアップ済み原本から昇格済みバイト列を作成し、$stagingDir
+      # 配下へ「新規ファイルとして」書き込む(CreateNewが失敗すれば例外→ロールバック経路)。
+      $promotedBytes = New-LegacyPromotedNoteBytes $origBackupPath $uuid
+      $promotedStagedPath = Join-Path $stagingDir $pm.TargetFileName
+      # FileStream.CreateNewの直前に追跡リストへ登録しておく(書込み自体が途中で例外に
+      # なった場合でも、部分書込み済みファイルが$stagingDir内に残る可能性があるため、
+      # ロールバック時のベストエフォート清掃(下記)がその部分ファイルも確実に対象にできるようにする)。
+      $promotedStagedPathsForCleanup += $promotedStagedPath
+      $pfs = [System.IO.FileStream]::new(
+        $promotedStagedPath,
+        [System.IO.FileMode]::CreateNew,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None
+      )
+      try {
+        $pfs.Write($promotedBytes, 0, $promotedBytes.Length)
+        $pfs.Flush($true)
+      } finally {
+        $pfs.Close()
+        $pfs.Dispose()
+      }
+
+      $expectedPromotedSha = [BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($promotedBytes)).Replace("-", "").ToUpperInvariant()
+      $promotedPostSha = Get-FileSha256Raw $promotedStagedPath
+      $promotedPostSize = (Get-Item -LiteralPath $promotedStagedPath).Length
+      if ($promotedPostSha -ne $expectedPromotedSha -or $promotedPostSize -ne $promotedBytes.Length) {
+        throw "Legacy昇格後ノートのステージング書き込み後バイト検証に失敗しました: $promotedStagedPath"
+      }
+
+      $pm.PromotedStagedPath = $promotedStagedPath
+      $pm.PromotedSha256 = $promotedPostSha
+      $pm.PromotedSizeBytes = $promotedPostSize
+      $pm.OrigBackupPath = $origBackupPath
+    }
+
     # B-4 Mutation Phase 2
     $targetCanonicalDir = $topo.CanonicalFolderFullPath
-    if ($canonicalState -eq "MATCHED_EXISTING") {
-      # Case A: Move individual files to canonical
+    if ($applyCase -eq "A") {
+      # Case A: Move individual files to canonical (既存ManagedNotes + Legacy昇格ノートを統合)
+      $stagingToCanonicalItems = @()
       foreach ($n in $allManagedNotes) {
-        $stagedFile = Join-Path $stagingDir $n.FileName
-        $finalFile = Join-Path $targetCanonicalDir $n.FileName
+        $stagingToCanonicalItems += @{ StagedFileName = $n.FileName; FinalFileName = $n.FileName; Sha256 = $n.Sha256; SizeBytes = $n.SizeBytes }
+      }
+      foreach ($pm in $allPromotions) {
+        $stagingToCanonicalItems += @{ StagedFileName = $pm.TargetFileName; FinalFileName = $pm.TargetFileName; Sha256 = $pm.PromotedSha256; SizeBytes = $pm.PromotedSizeBytes }
+      }
+      foreach ($item in $stagingToCanonicalItems) {
+        $stagedFile = Join-Path $stagingDir $item.StagedFileName
+        $finalFile = Join-Path $targetCanonicalDir $item.FinalFileName
         if (Test-Path -LiteralPath $finalFile) {
           throw "最終Canonicalフォルダに同名ファイルが既に存在します: $finalFile"
         }
@@ -3551,8 +4237,8 @@ function Invoke-ApplyCustomerFolderMerge {
           OpType = "MOVE_FILE_STAGING_TO_CANONICAL"
           SourcePath = $stagedFile
           DestPath = $finalFile
-          ExpectedSha256 = $n.Sha256
-          ExpectedSizeBytes = $n.SizeBytes
+          ExpectedSha256 = $item.Sha256
+          ExpectedSizeBytes = $item.SizeBytes
           OwnerToken = $null
           State = "PENDING"
           Timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
@@ -3566,7 +4252,7 @@ function Invoke-ApplyCustomerFolderMerge {
 
         $postSha = Get-FileSha256Raw $finalFile
         $postSize = (Get-Item -LiteralPath $finalFile).Length
-        if ($postSha -ne $n.Sha256 -or $postSize -ne $n.SizeBytes) {
+        if ($postSha -ne $item.Sha256 -or $postSize -ne $item.SizeBytes) {
           throw "最終Canonical移動後のバイト検証に失敗しました: $finalFile"
         }
 
@@ -3618,6 +4304,132 @@ function Invoke-ApplyCustomerFolderMerge {
         throw "ステージングディレクトリに未処理のファイルが存在するため削除できません: $stagingDir"
       }
       [System.IO.Directory]::Delete($stagingDir, $false)
+    }
+    elseif ($applyCase -eq "C") {
+      # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+      # Case C: 単一Legacyフォルダのみ(VerifiedFolders=0, Legacy=1)。Section 11の
+      # 「昇格ノートを反映した上でフォルダ自体をCanonical名へリネームし、未管理コンテンツは
+      # リネームされたフォルダ内にそのまま温存する」を満たすため、legacyフォルダ自身を直接
+      # Canonical名へリネームする。ステージングは昇格バイトの一時置き場としてのみ使われ、
+      # 最終的にstagingDir自体は空のまま削除する。
+      $legacyOnlyFolder = $legacyFoldersApply[0]
+
+      foreach ($pm in $allPromotions) {
+        $finalFile = Join-Path $legacyOnlyFolder.FullPath $pm.TargetFileName
+        if (Test-Path -LiteralPath $finalFile) {
+          throw "Legacyフォルダ内に同名ファイルが既に存在します: $finalFile"
+        }
+        $journalEntry = [ordered]@{
+          Seq = $seq++
+          OpType = "MOVE_FILE_STAGING_TO_CANONICAL"
+          SourcePath = $pm.PromotedStagedPath
+          DestPath = $finalFile
+          ExpectedSha256 = $pm.PromotedSha256
+          ExpectedSizeBytes = $pm.PromotedSizeBytes
+          OwnerToken = $null
+          State = "PENDING"
+          Timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+        }
+        $journalData.entries = @($journalData.entries) + $journalEntry
+        [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+
+        Invoke-TestCrashHook "D"
+
+        [System.IO.File]::Move($pm.PromotedStagedPath, $finalFile)
+
+        $postSha = Get-FileSha256Raw $finalFile
+        $postSize = (Get-Item -LiteralPath $finalFile).Length
+        if ($postSha -ne $pm.PromotedSha256 -or $postSize -ne $pm.PromotedSizeBytes) {
+          throw "Legacyフォルダ内への昇格ノート配置後バイト検証に失敗しました: $finalFile"
+        }
+
+        Invoke-TestCrashHook "E"
+
+        $journalEntry.State = "COMPLETED"
+        [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+      }
+
+      # ---- Legacy Name-Match Merge Corrective R1 (2026-09-09) ----
+      # Case C: ステージング所有権マーカーを既存のMOVE_OWNERSHIP_MARKERジャーナル
+      # プリミティブ経由でlegacyフォルダへ移動する(不整合なRemove-Item+CreateNewの
+      # 未ジャーナル置換を廃止)。既存のInvoke-OptionBRollbackはOpType別に汎用処理する
+      # ため、本関数・ジャーナルスキーマ・ロールバックエンジンには一切手を加えない。
+      $legacyOwnerMarker = Join-Path $legacyOnlyFolder.FullPath ".fm-obsidian-merge-owner"
+      $markerSha = Get-FileSha256Raw $stagingInfo.OwnerMarkerPath
+      $markerSize = (Get-Item -LiteralPath $stagingInfo.OwnerMarkerPath).Length
+      $journalEntryMarker = [ordered]@{
+        Seq = $seq++
+        OpType = "MOVE_OWNERSHIP_MARKER"
+        SourcePath = $stagingInfo.OwnerMarkerPath
+        DestPath = $legacyOwnerMarker
+        ExpectedSha256 = $markerSha
+        ExpectedSizeBytes = $markerSize
+        OwnerToken = $ownerToken
+        State = "PENDING"
+        Timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+      }
+      $journalData.entries = @($journalData.entries) + $journalEntryMarker
+      [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+
+      Invoke-TestCrashHook "D"
+
+      [System.IO.File]::Move($stagingInfo.OwnerMarkerPath, $legacyOwnerMarker)
+
+      if (-not (Test-Path -LiteralPath $legacyOwnerMarker -PathType Leaf) -or (Test-Path -LiteralPath $stagingInfo.OwnerMarkerPath)) {
+        throw "所有権マーカーの移動後検証に失敗しました: $legacyOwnerMarker"
+      }
+      $postMarkerSha = Get-FileSha256Raw $legacyOwnerMarker
+      $postMarkerSize = (Get-Item -LiteralPath $legacyOwnerMarker).Length
+      $postMarkerToken = (Get-Content -LiteralPath $legacyOwnerMarker -Raw -Encoding UTF8).Trim()
+      if ($postMarkerSha -ne $markerSha -or $postMarkerSize -ne $markerSize -or $postMarkerToken -ne $ownerToken) {
+        throw "Legacyフォルダ所有権マーカーのバイト/トークン検証に失敗しました: $legacyOwnerMarker"
+      }
+
+      Invoke-TestCrashHook "E"
+
+      $journalEntryMarker.State = "COMPLETED"
+      [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+
+      $remainingStaged = @(Get-ChildItem -LiteralPath $stagingDir -Force -ErrorAction Stop)
+      if ($remainingStaged.Count -gt 0) {
+        throw "ステージングディレクトリに未処理のファイルが存在するため削除できません: $stagingDir"
+      }
+      [System.IO.Directory]::Delete($stagingDir, $false)
+
+      $finalOwnerMarker = Join-Path $targetCanonicalDir ".fm-obsidian-merge-owner"
+      $journalEntryDir = [ordered]@{
+        Seq = $seq++
+        OpType = "MOVE_DIRECTORY"
+        SourcePath = $legacyOnlyFolder.FullPath
+        DestPath = $targetCanonicalDir
+        ExpectedSha256 = $null
+        ExpectedSizeBytes = $null
+        OwnerToken = $ownerToken
+        State = "PENDING"
+        Timestamp = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
+      }
+      $journalData.entries = @($journalData.entries) + $journalEntryDir
+      [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
+
+      Invoke-TestCrashHook "D"
+
+      [System.IO.Directory]::Move($legacyOnlyFolder.FullPath, $targetCanonicalDir)
+
+      if (-not (Test-Path -LiteralPath $targetCanonicalDir -PathType Container) -or (Test-Path -LiteralPath $legacyOnlyFolder.FullPath)) {
+        throw "ディレクトリ移動後の存在検証に失敗しました: $targetCanonicalDir"
+      }
+      if (-not (Test-Path -LiteralPath $finalOwnerMarker -PathType Leaf)) {
+        throw "最終Canonicalフォルダに所有権マーカーが見つかりません: $finalOwnerMarker"
+      }
+      $readFinalToken = (Get-Content -LiteralPath $finalOwnerMarker -Raw -Encoding UTF8).Trim()
+      if ($readFinalToken -ne $ownerToken) {
+        throw "最終Canonicalフォルダの所有権トークンが不一致です。"
+      }
+
+      Invoke-TestCrashHook "E"
+
+      $journalEntryDir.State = "COMPLETED"
+      [void](Write-JournalEvidenceSafe $txDir $txId $journalData)
     } else {
       # Case B: Directory move
       $finalOwnerMarker = Join-Path $targetCanonicalDir ".fm-obsidian-merge-owner"
@@ -3665,14 +4477,83 @@ function Invoke-ApplyCustomerFolderMerge {
     }
 
     $finalTopo = Get-CustomerMergeTopology $vaultRoot $uuid $nameRaw
-    if ($null -ne $finalTopo.Error) {
+    $totalFinalNoteCount = $allManagedNotes.Count + $allPromotions.Count
+    $legacyContinuationRequired = $false
+
+    if ($null -ne $finalTopo.Error -and $finalTopo.Error -ne "CUSTOMER_NOT_FOUND") {
       throw "マージ後のトポロジ検証でエラーが発生しました ($($finalTopo.Error)): $($finalTopo.Details)"
     }
-    if ($finalTopo.MatchedFolders.Count -ne 1 -or $finalTopo.MatchedFolders[0].FolderName -ne $topo.CanonicalFolderName) {
-      throw "マージ後のトポロジ検証に失敗しました: フォルダが単一Canonicalに集約されていません。"
+
+    $normalCanonicalMatch = $false
+    if ($null -eq $finalTopo.Error) {
+      if ($null -ne $finalTopo.MatchedFolders -and $finalTopo.MatchedFolders.Count -eq 1) {
+        $normalCanonicalMatch = ($finalTopo.MatchedFolders[0].FolderName -eq $topo.CanonicalFolderName)
+      }
     }
-    if ($finalTopo.MatchedFolders[0].ManagedNotes.Count -ne $allManagedNotes.Count) {
-      throw "マージ後の管理ノート総数が一致しません。"
+
+    $shouldEvaluateLegacyNoUuidContinuation = (
+      ($finalTopo.Error -eq "CUSTOMER_NOT_FOUND") -or
+      (($null -eq $finalTopo.Error) -and (-not $normalCanonicalMatch))
+    )
+
+    if ($shouldEvaluateLegacyNoUuidContinuation) {
+      # ---- Legacy Name-Match Merge Corrective R2 (2026-09-09) Corrective B ----
+      # TEMPORARY_CANONICAL_NO_UUID_CONTINUATION: legacy候補が関与し、結果として
+      # UUID管理/昇格ノートが0件になる「空フォルダのみのlegacyリネーム」の場合に限り、
+      # この狭い述語でのみ通常の単一Canonical集約検証を緩和する。それ以外のケースでは
+      # 既存のフェイルクローズ挙動(ロールバック含む)を一切弱めない。
+      $allowLegacyNoUuidContinuation = $false
+      if (
+        $legacyFoldersApply.Count -ge 1 -and
+        $totalFinalNoteCount -eq 0 -and
+        (Test-Path -LiteralPath $targetCanonicalDir -PathType Container)
+      ) {
+        # ---- Legacy Name-Match Merge Corrective R2.1 (2026-09-09) ----
+        # 既存の狭い述語(legacyフォルダ関与 + 管理/昇格ノート合計0件 + canonical
+        # ディレクトリ実在)はそのまま維持したうえで、継続許可の直前にcanonical最終
+        # ディレクトリ自体の安全性を再検証する。管理ノート数0件であってもフォルダ内に
+        # 未管理コンテンツが残っていれば「真に空」とはみなさず、legacy候補適格判定と
+        # 同じ直下ファイル安全判定(reparse / ハードリンク / ADS、列挙失敗は
+        # フェイルクローズ)をTest-CanonicalFolderContentSafetyForContinuationで適用する
+        # (ディレクトリが真に空ならファイルループ自体が実行されないため、この判定内で
+        # 自然にスキップされる)。通常の最終トポロジ検証(throw文言含む)は一切弱めない。
+        $targetCanonicalItem = Get-Item -LiteralPath $targetCanonicalDir -Force
+        $targetCanonicalIsReparse = (($targetCanonicalItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+        if ($targetCanonicalItem.PSIsContainer -and -not $targetCanonicalIsReparse) {
+          $targetCanonicalCsCheck = Test-DirectoryCaseSensitiveSafe $targetCanonicalDir
+          if ($targetCanonicalCsCheck.Status -eq "CASE_INSENSITIVE") {
+            # ---- Legacy Name-Match Merge Corrective R2.2 (2026-09-09) Corrective A ----
+            # フルツリー安全判定を、Get-UciFolderEvidenceの再帰的Markdown探索より必ず先に
+            # 実行する(不安全/再解析ポイントのサブツリーは、そこへの再帰evidence探索を
+            # 信頼する前に拒否されていなければならない)。
+            $targetCanonicalContentSafety = Test-CanonicalFolderContentSafetyForContinuation $targetCanonicalDir
+            if ($null -eq $targetCanonicalContentSafety.Error) {
+              $finalCanonicalEvidence = Get-UciFolderEvidence $targetCanonicalDir $uuid
+              if ($finalCanonicalEvidence.state -eq "NoEvidence") {
+                $allowLegacyNoUuidContinuation = $true
+              }
+            }
+          }
+        }
+      }
+      if (-not $allowLegacyNoUuidContinuation) {
+        if ($finalTopo.Error -eq "CUSTOMER_NOT_FOUND") {
+          throw "マージ後のトポロジ検証でエラーが発生しました ($($finalTopo.Error)): $($finalTopo.Details)"
+        }
+        throw "マージ後のトポロジ検証に失敗しました: フォルダが単一Canonicalに集約されていません。"
+      }
+      $legacyContinuationRequired = $true
+    }
+
+    # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+    # $allManagedNotes(既存VerifiedFolders由来)に加え、Legacy昇格ノート($allPromotions)も
+    # 最終Canonicalフォルダに集約されている前提のため、両者の合計で比較する。
+    # legacyContinuationRequiredが真の場合(UUID管理ノート0件を許容した継続)は、
+    # この管理ノート総数比較自体が前提を欠くため実行しない。
+    if (-not $legacyContinuationRequired) {
+      if ($finalTopo.MatchedFolders[0].ManagedNotes.Count -ne $totalFinalNoteCount) {
+        throw "マージ後の管理ノート総数が一致しません。"
+      }
     }
 
     $committedData = @{
@@ -3680,7 +4561,7 @@ function Invoke-ApplyCustomerFolderMerge {
       planToken = $liveToken
       uuid = $uuid
       canonicalFolderName = $topo.CanonicalFolderName
-      mergedNotesCount = $allManagedNotes.Count
+      mergedNotesCount = $totalFinalNoteCount
       committedAt = (Get-Date).ToString("yyyy-MM-ddTHH:mm:ssZ")
     }
     $committedFile = Write-TransactionEvidenceSafe $txDir $txId "committed" $committedData
@@ -3704,20 +4585,78 @@ function Invoke-ApplyCustomerFolderMerge {
         if (Test-Path -LiteralPath $journalFile) { Remove-Item -LiteralPath $journalFile -Force -ErrorAction Stop }
         if (Test-Path -LiteralPath $inProgressFile) { Remove-Item -LiteralPath $inProgressFile -Force -ErrorAction Stop }
         if (Test-Path -LiteralPath $committedFile) { Remove-Item -LiteralPath $committedFile -Force -ErrorAction Stop }
+        # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+        # $backupDirはPOST-COMMIT INTERLOCK確立後のベストエフォート清掃対象。失敗しても
+        # 既存の仕組みと同様に警告のみでロールバックはトリガーしない(原本の安全な控えを
+        # 誤って必須扱いにしないため)。
+        if ($null -ne $backupDir -and (Test-Path -LiteralPath $backupDir)) { Remove-Item -LiteralPath $backupDir -Recurse -Force -ErrorAction Stop }
       } catch {
         $warning = "TRANSACTION_MARKER_CLEANUP_PENDING"
       }
     }
 
+    # ---- Legacy Name-Match Merge Corrective R2 (2026-09-09) Corrective D ----
+    # コミット後のみ実施する、非canonicalなlegacyソースフォルダの後始末。未管理コンテンツの
+    # 自動移動は既存の凍結ルールのまま一切行わない。真に空のフォルダのみ削除対象とし、
+    # 再帰削除は絶対に行わない(直下の子が1件でもあれば削除しない)。
+    $residualLegacyFolders = @()
+    foreach ($lf in $legacyFoldersApply) {
+      if ([string]::Equals($lf.FullPath, $targetCanonicalDir, [System.StringComparison]::OrdinalIgnoreCase)) {
+        continue
+      }
+      if (-not (Test-Path -LiteralPath $lf.FullPath -PathType Container)) {
+        # Case C等、legacyフォルダ自体が既にcanonicalへ直接リネーム済みで元パスが
+        # もう存在しない場合は、残存フォルダとして扱わない。
+        continue
+      }
+      try {
+        $remainingInLegacy = @(Get-ChildItem -LiteralPath $lf.FullPath -Force -ErrorAction Stop)
+      } catch {
+        $remainingInLegacy = $null
+      }
+      if ($null -eq $remainingInLegacy) {
+        # 列挙に失敗した場合はフェイルクローズで「非空」として温存・報告する。
+        $residualLegacyFolders += [ordered]@{
+          folderName = $lf.FolderName
+          fullPath = $lf.FullPath
+          warning = "残存レガシーフォルダの内容を安全に確認できなかったため削除せず温存しました。未管理コンテンツが残っている可能性があります。現在の顧客と同名一致しなくなるよう内容を確認のうえ手動でリネーム・整理し、再度検出される場合はFileMakerから再実行してください。"
+        }
+        continue
+      }
+      if ($remainingInLegacy.Count -eq 0) {
+        try {
+          [System.IO.Directory]::Delete($lf.FullPath, $false)
+        } catch {
+          # ベストエフォート。削除に失敗しても既存の成功応答は変えず、残存として報告する。
+          $residualLegacyFolders += [ordered]@{
+            folderName = $lf.FolderName
+            fullPath = $lf.FullPath
+            warning = "空のレガシーフォルダの削除に失敗しました(手動確認が必要な場合があります)。未管理コンテンツの自動移動・削除は行っていません。"
+          }
+        }
+        continue
+      }
+      # 非空: 未管理コンテンツが残存。自動移動・削除は行わず、そのまま温存する。
+      $residualLegacyFolders += [ordered]@{
+        folderName = $lf.FolderName
+        fullPath = $lf.FullPath
+        warning = "未管理コンテンツが残っているため、このレガシーフォルダは意図的に移動・削除しませんでした。現在の顧客と同名一致しなくなるよう内容を確認のうえ手動でリネーム・整理し、再度検出される場合はFileMakerから再実行してください。"
+      }
+    }
+
     $resp = New-MergeResponse $reqId "OK" "MERGE_COMPLETED" "顧客フォルダのマージに完了しました。" -extra @{
       canonicalFolderName = $topo.CanonicalFolderName
-      mergedNotesCount = $allManagedNotes.Count
+      mergedNotesCount = $totalFinalNoteCount
       sourceFoldersPreserved = $allSourceFolderNames
+      legacyContinuationRequired = $legacyContinuationRequired
+      residualLegacyFolders = $residualLegacyFolders
     }
     if ($null -ne $warning) {
       $resp = New-MergeResponse $reqId "OK" "MERGE_COMPLETED" "顧客フォルダのマージは完了しましたが、クリーンアップが一部遅延しました。" -warning $warning -extra @{
         canonicalFolderName = $topo.CanonicalFolderName
-        mergedNotesCount = $allManagedNotes.Count
+        mergedNotesCount = $totalFinalNoteCount
+        legacyContinuationRequired = $legacyContinuationRequired
+        residualLegacyFolders = $residualLegacyFolders
       }
     }
     Write-Output $resp
@@ -3726,9 +4665,14 @@ function Invoke-ApplyCustomerFolderMerge {
     if ($isCommitted -or $committedOnDisk) {
       # POST-COMMIT INTERLOCK: Destructive rollback is permanently forbidden after commit!
       $warnCode = if ($null -ne $warning) { $warning } else { "POST_COMMIT_CLEANUP_FAILED" }
+      # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+      # $allManagedNotes/$allPromotionsは関数冒頭で@()初期化済みのためnullにはならないが、
+      # 既存コードの防御的null-safeスタイルをそのまま踏襲する。
+      $safeManagedCount = if ($null -ne $allManagedNotes) { $allManagedNotes.Count } else { 0 }
+      $safePromotedCount = if ($null -ne $allPromotions) { $allPromotions.Count } else { 0 }
       $resp = New-MergeResponse $reqId "OK" "MERGE_COMPLETED" "顧客フォルダのマージは完了しましたが、事後処理中に例外が発生しました ($($_.Exception.Message))。" -warning $warnCode -extra @{
         canonicalFolderName = if ($null -ne $topo) { $topo.CanonicalFolderName } else { $null }
-        mergedNotesCount = if ($null -ne $allManagedNotes) { $allManagedNotes.Count } else { 0 }
+        mergedNotesCount = $safeManagedCount + $safePromotedCount
       }
       Write-Output $resp
     } else {
@@ -3736,6 +4680,31 @@ function Invoke-ApplyCustomerFolderMerge {
       if ($rbRes.Success) {
         # Crash Window H: ROLLBACK_COMPLETE persisted to journal, before best-effort cleanup
         Invoke-TestCrashHook "H"
+        # ---- Legacy Name-Match Merge Corrective (2026-09-09) 追加 ----
+        # 既存のComplete-RollbackEvidenceCleanup(rollback engineの一部として本タスクでは
+        # 変更しない)は「ステージングディレクトリが空であること」を削除の前提とする。
+        # Phase 1.5で$stagingDir直下に非ジャーナルで作成した昇格済みファイルは、原本の
+        # ロールバック(バックアップ済み原本のCOMPLETED MOVE_FILEエントリの逆再生)対象では
+        # ないため、そのままでは前提を満たせず$stagingDirが孤立して残る。ベストエフォートで
+        # (失敗しても既存のフェイルオープン方針は変えず、単に清掃が先送りされるだけ)ここで
+        # 個別に削除しておく。
+        if ($null -ne $promotedStagedPathsForCleanup) {
+          foreach ($psp in $promotedStagedPathsForCleanup) {
+            try {
+              if (Test-Path -LiteralPath $psp) { Remove-Item -LiteralPath $psp -Force -ErrorAction SilentlyContinue }
+            } catch {}
+          }
+        }
+        # ロールバックにより原本は$backupDirから元の場所へ戻されているはずなので、
+        # 空になった$backupDir自体もベストエフォートで削除する(失敗しても無害)。
+        try {
+          if ($null -ne $backupDir -and (Test-Path -LiteralPath $backupDir)) {
+            $remainingBackup = @(Get-ChildItem -LiteralPath $backupDir -Force -ErrorAction SilentlyContinue)
+            if ($remainingBackup.Count -eq 0) {
+              Remove-Item -LiteralPath $backupDir -Force -ErrorAction SilentlyContinue
+            }
+          }
+        } catch {}
         Complete-RollbackEvidenceCleanup $txId $txDir $journalData
         Write-Output (New-MergeResponse $reqId "NG" "MERGE_FAILED_ROLLED_BACK" "マージ中にエラーが発生したためロールバックしました: $($_.Exception.Message)")
       } else {
@@ -4336,6 +5305,23 @@ function Invoke-CheckObsidianNotes($payload) {
       Out-NG "INVALID_UUID_FORMAT" "pk_CLIENTがUUID形式ではありません。"
   }
   $noteType = if ($payload.ContainsKey("noteType")) { [string]$payload["noteType"] } else { "" }
+  # ---- Legacy Name-Match Merge Corrective R2 (2026-09-09) Corrective C ----
+  # legacyMigrationConfirmedはFileMaker側が「legacy APPLY成功後」にのみ設定する
+  # ワンショット継続フラグ。未指定時は既存動作を一切変更しない。UUID identity authority
+  # へは一切昇格させず、PlanToken等にも一切束縛しない。新規公開actionも追加しない。
+  $legacyMigrationConfirmedRaw = if ($payload.ContainsKey("legacyMigrationConfirmed")) { $payload["legacyMigrationConfirmed"] } else { $null }
+  $legacyMigrationConfirmed = $false
+  if ($null -ne $legacyMigrationConfirmedRaw) {
+      if ($legacyMigrationConfirmedRaw -is [bool]) {
+          $legacyMigrationConfirmed = [bool]$legacyMigrationConfirmedRaw
+      } else {
+          $legacyMigrationConfirmedStr = ([string]$legacyMigrationConfirmedRaw).Trim()
+          $legacyMigrationConfirmed = (
+              $legacyMigrationConfirmedStr -eq "1" -or
+              [string]::Equals($legacyMigrationConfirmedStr, "true", [System.StringComparison]::OrdinalIgnoreCase)
+          )
+      }
+  }
 
   # ---- 名前正規化 ----
   $n = $nameRaw.Trim()
@@ -4608,21 +5594,101 @@ function Invoke-CheckObsidianNotes($payload) {
       }
 
       # legacy顧客名一致フォルダの状態を確認する(自動作成の前に必ず判定する)。
-      $folders = Get-ChildItem -LiteralPath $custRoot -Directory -ErrorAction SilentlyContinue
-      $matchName = Normalize-ForMatch $nameRaw
-      $legacyCandidates = @($folders | Where-Object {
-          $_.Name -ne $canonicalFolderName -and (Normalize-ForMatch $_.Name) -eq $matchName
-      })
-      if ($legacyCandidates.Count -ge 1) {
-          # 完全UUID証拠が無いlegacyフォルダ。別canonicalフォルダを勝手に作らずFail-closed。
-          $legacyNames = ($legacyCandidates | ForEach-Object { $_.Name }) -join ";"
-          Out-NG "LEGACY_FOLDER_NEEDS_MIGRATION" "顧客名が一致するフォルダが存在しますが、pk_CLIENTの完全UUID証拠がないため同一顧客と確定できません。手動確認が必要です。(Folders: $legacyNames / pk_CLIENT: $uuid)"
+      # ---- Legacy Name-Match Merge Corrective R2.2 (2026-09-09) Corrective B / 項目4 ----
+      # 従来のCHECK専用ローカル簡易スキャン(Normalize-ForMatchの直接比較 +
+      # -ErrorAction SilentlyContinueによる列挙失敗の無音黙殺)を廃止する。これを
+      # legacy候補適格判定の唯一のauthorityであるGet-LegacyNameMatchCandidatesの再利用へ
+      # 置き換える。これにより、正規化(OrdinalIgnoreCase)・UUID/YAML evidence判定・
+      # ファイルシステム安全判定(reparse/ハードリンク/ADS)・列挙失敗時フェイルクローズが、
+      # PLAN/APPLY側の既存authorityと完全に同一の判定内容で適用される。第三の正規化実装は
+      # 導入しない。
+      $legacyLookupCheck = Get-LegacyNameMatchCandidates $custRoot $nameRaw $canonicalFolderName $uuid
+      if ($null -ne $legacyLookupCheck.Error) {
+          Out-NG $legacyLookupCheck.Error $legacyLookupCheck.Details
+      }
+      $legacyCandidates = @($legacyLookupCheck.LegacyFolders)
+
+      if (-not $legacyMigrationConfirmed) {
+          # 通常呼び出し(legacyMigrationConfirmedが偽/未指定): 既存動作を維持する。
+          # 安全に確認されたLegacyFolders件数が1件以上ならFail-closed。
+          if ($legacyCandidates.Count -ge 1) {
+              $legacyNames = ($legacyCandidates | ForEach-Object { $_.FolderName }) -join ";"
+              Out-NG "LEGACY_FOLDER_NEEDS_MIGRATION" "顧客名が一致するフォルダが存在しますが、pk_CLIENTの完全UUID証拠がないため同一顧客と確定できません。手動確認が必要です。(Folders: $legacyNames / pk_CLIENT: $uuid)"
+          }
+      } else {
+          # ---- Legacy Name-Match Merge Corrective R2.2 (2026-09-09) Corrective B ----
+          # ワンショット継続(legacyMigrationConfirmed=true): APPLYが意図的に残した
+          # 残存legacyフォルダを、この1回のCHECK呼び出しに限りidentity候補として無視できる
+          # ようにする。ただし、APPLY完了後にトポロジが実質的に変化し、残存legacyの中に
+          # 昇格可能ノート(PromotableNotes)を含むものが新たに検出された場合は、安全のため
+          # 通常のLEGACY_FOLDER_NEEDS_MIGRATIONへ安全停止し、FileMakerからのマージフロー
+          # 再実行を促す(この1回限りの無視を許可しない)。未管理コンテンツのみの残存legacyは、
+          # このワンショットのidentity判定に限り無視してよい(残存コンテンツの削除・移動は
+          # 一切行わない。次回の通常呼び出しでは再度検出対象となる)。
+          $residualWithPromotable = @($legacyCandidates | Where-Object { @($_.PromotableNotes).Count -ge 1 })
+          if ($residualWithPromotable.Count -ge 1) {
+              $legacyNames = ($legacyCandidates | ForEach-Object { $_.FolderName }) -join ";"
+              Out-NG "LEGACY_FOLDER_NEEDS_MIGRATION" "顧客名が一致するフォルダが存在しますが、APPLY完了後にトポロジが変化し昇格可能なノートが検出されたため、同一顧客と確定できません。FileMakerからマージフローを再実行してください。(Folders: $legacyNames / pk_CLIENT: $uuid)"
+          }
       }
 
       # canonical名フォルダが既に存在するのに完全UUID証拠が無い場合(UUID8衝突等)も自動採用しない。
+      $folders = Get-ChildItem -LiteralPath $custRoot -Directory -ErrorAction SilentlyContinue
       $canonicalExisting = @($folders | Where-Object { $_.Name -eq $canonicalFolderName })
       if ($canonicalExisting.Count -ge 1) {
-          Out-NG "CANONICAL_FOLDER_NO_UUID_EVIDENCE" "canonical名の顧客フォルダは存在しますが、pk_CLIENTの完全UUID証拠がありません。UUID先頭8文字の衝突の可能性があるため処理を中止します。(Folder: $canonicalFolderName / pk_CLIENT: $uuid)"
+          # ---- Legacy Name-Match Merge Corrective R2.1 (2026-09-09) ----
+          # legacyMigrationConfirmed=1のワンショット継続専用の狭い例外。フラグ不在時、
+          # または以下いずれかのガード不成立時は、既存のCANONICAL_FOLDER_NO_UUID_EVIDENCE
+          # Fail-Closed動作を一切変更しない。
+          # R2.1修正: legacy候補適格判定(Get-LegacyNameMatchCandidates)と同一の安全判定
+          # 対象集合(フォルダ自体のreparse/大文字小文字区別 + 直下ファイルのreparse/
+          # ハードリンク/ADS + Get-UciFolderEvidence)を、canonical継続フォルダ自身に対しても
+          # 一切弱めずに適用する。個別の判定失敗は既存の該当エラーコード/メッセージ契約で
+          # Out-NGへそのまま報告し(no silent skip)、汎用のCANONICAL_FOLDER_NO_UUID_EVIDENCEへ
+          # 握りつぶさない。$custRootではなくcanonical継続フォルダ自身の大文字小文字区別状態を
+          # 判定する点もR2からの修正(R2は誤って$custRootを判定していた)。
+          $legacyContinuationAllowed = $false
+          $canonicalContinuationFolderInfo = $null
+          if ($legacyMigrationConfirmed -and $canonicalExisting.Count -eq 1) {
+              $canonicalContinuationFolderInfo = $canonicalExisting[0]
+              $canonicalIsReparse = (($canonicalContinuationFolderInfo.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+              if (-not $canonicalContinuationFolderInfo.PSIsContainer) {
+                  Out-NG "MERGE_TOPOLOGY_ENUMERATION_FAILED" "canonical名の顧客フォルダが通常のディレクトリではありません。安全のため処理を中止します。(Path: $($canonicalContinuationFolderInfo.FullName))"
+              }
+              if ($canonicalIsReparse) {
+                  Out-NG "MERGE_REPARSE_POINT_UNSUPPORTED" "canonical名の顧客フォルダ自体が再解析ポイント(ジャンクション/シンボリックリンク)です: $($canonicalContinuationFolderInfo.FullName) 。当該フォルダから再解析ポイントを削除して通常フォルダへ置き換えたうえで、FileMakerから再実行してください。"
+              }
+              $canonicalCsCheck = Test-DirectoryCaseSensitiveSafe $canonicalContinuationFolderInfo.FullName
+              if ($canonicalCsCheck.Status -eq "CASE_SENSITIVE") {
+                  Out-NG "MERGE_CASE_SENSITIVE_DIRECTORY_UNSUPPORTED" "canonical名の顧客フォルダが大文字/小文字を区別するディレクトリとして設定されています: $($canonicalContinuationFolderInfo.FullName) 。ケースセンシティブ設定を解除してから、FileMakerから再実行してください。"
+              }
+              if ($canonicalCsCheck.Status -ne "CASE_INSENSITIVE") {
+                  Out-NG "MERGE_CASE_SENSITIVE_DIRECTORY_UNSUPPORTED" "canonical名の顧客フォルダのケースセンシティブ状態を安全に確認できませんでした(フェイルクローズ): $($canonicalCsCheck.Details) 。ファイルシステム状態を確認・修正したうえで、FileMakerから再実行してください。"
+              }
+              # ---- Legacy Name-Match Merge Corrective R2.2 (2026-09-09) Corrective A ----
+              # フルツリー安全判定を、Get-UciFolderEvidenceの再帰的Markdown探索より必ず先に
+              # 実行する(不安全/再解析ポイントのサブツリーは、そこへの再帰evidence探索を
+              # 信頼する前に拒否されていなければならない)。
+              $canonicalContentSafety = Test-CanonicalFolderContentSafetyForContinuation $canonicalContinuationFolderInfo.FullName
+              if ($null -ne $canonicalContentSafety.Error) {
+                  Out-NG $canonicalContentSafety.Error $canonicalContentSafety.Details
+              }
+              $canonicalContinuationEvidence = Get-UciFolderEvidence $canonicalContinuationFolderInfo.FullName $uuid
+              if ($canonicalContinuationEvidence.state -eq "NoEvidence") {
+                  $legacyContinuationAllowed = $true
+              }
+          }
+          if (-not $legacyContinuationAllowed) {
+              Out-NG "CANONICAL_FOLDER_NO_UUID_EVIDENCE" "canonical名の顧客フォルダは存在しますが、pk_CLIENTの完全UUID証拠がありません。UUID先頭8文字の衝突の可能性があるため処理を中止します。(Folder: $canonicalFolderName / pk_CLIENT: $uuid)"
+          }
+          # ---- legacyMigrationConfirmed ワンショット継続 ----
+          # canonical UUID-lessフォルダを今回呼び出し限りの新規作成先として採用する。
+          # 既存の未管理Markdownは書き換えず、昇格ルール対象外のUUID-lessノートをmanaged
+          # 扱いに昇格することもしない。$newCandidateAbs以降の既存CREATE経路
+          # (TARGET_NOTE_FILENAME_CONFLICT等の衝突保護を含む)をそのまま通過させる。
+          $foundFolder = $canonicalContinuationFolderInfo.Name
+          $currentFolderFull = $canonicalContinuationFolderInfo.FullName
+          $newCandidateAbs = Join-Path $currentFolderFull $canonicalFile
       }
   }
 
