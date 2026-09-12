@@ -3,7 +3,7 @@
 ## 1. Product Identity
 
 - **Product:** `FM-Obsidian-Bridge`
-- **Current Feature:** `customer-folder-merge` (Customer Folder Merge v1, Ver 9.1.0)
+- **Current Feature:** `customer-folder-merge` (Customer Folder Merge v1, Ver 9.1.1)
 - **Internal / Legacy Routine:** `UPDATE_CUSTOMER_IDENTITY` (an internal routine / older action; never use as a top-level product identifier)
 
 ---
