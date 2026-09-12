@@ -4,13 +4,11 @@
 
 > **This baseline describes the current repository-canonical, formally-closed source and current-documentation state.**
 > 
-> **This baseline does NOT assert that the canonical source has been deployed to the live Obsidian Vault.**
-> 
-> **Repository canonical baseline promotion and live Vault deployment are separate governance events. No Vault deployment is authorized by this baseline promotion.**
-> 
-> **Changes to source do not automatically update this baseline.**
->
-> **Production Vault deployment status (as of 2026-09-09): DEPLOYED.** Production Vault payload deployment has been completed under explicit Human authorization, following Gate 5 closure. The production payload SHA256 matches the canonical SHA256 recorded below. See §5 for details.
+> **Product Version:** `9.1.1`
+> **Feature:** `customer-folder-merge` (Customer Folder Merge v1)
+> **Effective Date:** `2026-09-12`
+> **Production Vault Deployment Status:** `DEPLOYED`
+> **Formal Project Closure Disposition:** `PASS_CUSTOMER_FOLDER_MERGE_V1_FORMAL_PROJECT_CLOSURE_COMPLETE`
 
 ---
 
@@ -21,6 +19,7 @@
 - **Feature ID:** `customer-folder-merge`
 - **Feature Title:** `Customer Folder Merge`
 - **Feature Version:** `1`
+- **Implementation Version:** `9.1.1`
 - **Internal / Legacy Routine:** `UPDATE_CUSTOMER_IDENTITY` (an internal routine / older action; never use as a top-level product identifier)
 
 ---
@@ -34,49 +33,52 @@
 | featureId | customer-folder-merge |
 | featureTitle | Customer Folder Merge |
 | featureVersion | 1 |
-| implementationVersion | 9.1.0 |
-| versionHeader | Ver: 9.1.0 (2026-08-29) - Customer Folder Merge v1 Implementation |
+| implementationVersion | 9.1.1 |
+| versionHeader | Ver: 9.1.1 (2026-09-12) - Customer Folder Merge v1 Corrective Closure |
 | canonicalSourcePath | FM-Obsidian-Bridge-Payload.ps1 |
-| canonicalSha256 | 39F497ACEA8471CFE1CCBB4E840DC301ECCA1D1499DBB0F01C93EC1C0C0A8014 |
-| canonicalSizeBytes | 265277 |
+| canonicalSha256 | 1AE2E326BC5261283CC9C375696DABA44494A881E22B4F2A31C273B52F5140B3 |
+| canonicalSizeBytes | 332686 |
 | canonicalEncoding | UTF-8 BOM |
 | canonicalEol | CRLF |
-| bindingCommitSha | 0a14303fc7ac1db3d4be8b092c9846bfc3bb0ec6 |
-| commitParentSha | ea34609f66e7aa099f81803af20f318068d4d2e1 |
-| closureAuthority | J2_STEP11_REPOSITORY_BASELINE_HUMAN_GATE_20260907 |
-| closureDisposition | PASS_J2_STEP11_REPOSITORY_CANONICAL_BASELINE_PROMOTED_VAULT_DEPLOYMENT_NOT_AUTHORIZED |
+| bindingCommitSha | ae7a7b3a447843ce70ee1655946e41da77c2a815 |
+| commitParentSha | fb6dbade8222428ab553a2bd9755575b6b5d68d1 |
+| closureAuthority | FINAL_GIT_CLOSURE_HUMAN_GATE_20260912 |
+| closureDisposition | PASS_FINAL_GIT_CLOSURE_COMMIT_PUSH_COMPLETE |
 | productionVaultTargetPath | C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1 |
-| effectiveDate | 2026-09-07 |
-| currentStatus | repository canonical / J-2 Step 11 MERGE_TARGET_FILE_EXISTS formally closed / Gate 5 formally closed by Human Authority / Production Vault payload deployment completed under explicit Human authorization (2026-09-09) |
+| effectiveDate | 2026-09-12 |
+| currentStatus | repository canonical / Customer Folder Merge v1 formally closed / implementation 9.1.1 / production deployed / full regression accepted / FileMaker integration compatible / no corrective required |
 
 ---
 
 ## 4. Formal Closure Authority
 
-This repository baseline is formally closed under authority **J2_STEP11_REPOSITORY_BASELINE_HUMAN_GATE_20260907** with closure disposition:
-`PASS_J2_STEP11_REPOSITORY_CANONICAL_BASELINE_PROMOTED_VAULT_DEPLOYMENT_NOT_AUTHORIZED`
+This repository baseline is formally closed under authority **FINAL_GIT_CLOSURE_HUMAN_GATE_20260912** with closure disposition:
+`PASS_FINAL_GIT_CLOSURE_COMMIT_PUSH_COMPLETE`
 
-This closure is repository-baseline closure only. It is NOT Vault deployment authority.
+Formal project closure disposition:
+`PASS_CUSTOMER_FOLDER_MERGE_V1_FORMAL_PROJECT_CLOSURE_COMPLETE`
 
-The `productionVaultTargetPath` below designates the intended production deployment target path. It does NOT assert that the newly promoted repository baseline has been deployed to that location. Live Vault deployment is a separate governance event not authorized by this baseline gate.
-
-- **Production Target Path (designated):** `C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1`
-- **Binding Commit:** `0a14303fc7ac1db3d4be8b092c9846bfc3bb0ec6`
-- **Canonical SHA256:** `39F497ACEA8471CFE1CCBB4E840DC301ECCA1D1499DBB0F01C93EC1C0C0A8014`
-- **Implementation Version:** `9.1.0`
+- **Production Target Path:** `C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1`
+- **Binding Commit:** `ae7a7b3a447843ce70ee1655946e41da77c2a815`
+- **Commit Parent:** `fb6dbade8222428ab553a2bd9755575b6b5d68d1`
+- **Canonical SHA256:** `1AE2E326BC5261283CC9C375696DABA44494A881E22B4F2A31C273B52F5140B3`
+- **Canonical SizeBytes:** `332686`
+- **Implementation Version:** `9.1.1`
+- **Effective Date:** `2026-09-12`
 
 ---
 
-## 5. Production Deployment & Gate 5 Status
+## 5. Production Deployment & Verification Status
 
 | Attribute | Value |
 |---|---|
 | gate5Status | FORMALLY_CLOSED_BY_HUMAN_AUTHORITY |
 | productionDeploymentStatus | DEPLOYED |
-| productionDeploymentDate | 2026-09-09 |
-| productionPayloadSha256 | 39F497ACEA8471CFE1CCBB4E840DC301ECCA1D1499DBB0F01C93EC1C0C0A8014 |
-| productionDeploymentAuthority | Human Authority (approved and completed following Gate 5 closure) |
+| productionDeploymentDate | 2026-09-12 |
+| productionPayloadSha256 | 1AE2E326BC5261283CC9C375696DABA44494A881E22B4F2A31C273B52F5140B3 |
+| productionDeploymentAuthority | Human Authority (approved and completed following Gate 5 and final corrective closure) |
 
-Production payload SHA256 at `C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1` was independently re-verified this session and matches the canonical SHA256 above exactly.
+Production payload SHA256 at `C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1` matches the canonical SHA256 above exactly (`1AE2E326BC5261283CC9C375696DABA44494A881E22B4F2A31C273B52F5140B3`).
 
-**Closure basis and disclosure.** `Evidence_Gate5_FinalClosure_R2_20260908/GATE5_FINAL_R2_CORRECTIVE_ADDENDUM.md` §7 recorded Gate status as `GATE5_CLOSURE_NOT_YET_AUTHORIZED` as of 2026-09-08 23:54 JST, and named a fresh Claude Cowork / Genspark re-review as the next required step. Per Human Authority, that re-review was subsequently completed, its findings were formally adjudicated, and Gate 5 closure was explicitly approved by Human Authority; production Vault deployment was then approved and completed by Human Authority. No corresponding evidence artifact for this later sequence was independently located in this repository during this reconciliation task; this entry records the closure and deployment status as confirmed by Human Authority.
+**Closure and deployment reconciliation:**
+Following Gate 5 and subsequent corrective cycles (including P-C1 through P-C9, legacy name-match focused regression, and full 17-surface regression), the 9.1.1 release was deployed to the production Obsidian Vault on 2026-09-12 and verified under Human Authority. Full regression acceptance, FileMaker integration compatibility, and final Git closure were achieved with zero regressions.

@@ -7,18 +7,19 @@ The FM-Obsidian Bridge connects FileMaker CRM with Obsidian Knowledge Vaults usi
 ```text
 +-------------------------------------------------------------------------------+
 |                             FileMaker CRM (RakkoDB)                           |
-|   - Confirmed Active Transport Script: Script 307                             |
-|   - Historical / Unverified Scripts: Script 299, Script 313                   |
-|     (unverified against current repository evidence)                          |
+|   - Active Integration Scripts:                                               |
+|     * Script 299: EXT-obs_OBSノート-開く                                     |
+|     * Script 370: EXT-obs_顧客フォルダ統合                                   |
+|     * Script 365: EXT-obs_顧客名・代表者名同期                               |
+|     * Script 307: EXT-obs_内部CallPS-PAYLOAD                                  |
 +-------------------------------------------------------------------------------+
                                       |
                        Base Elements Plug-In
                        BE_ExecuteSystemCommand
-                       (Specific plugin / FM versions: historical / unverified)
                                       |
                                       v
 +-------------------------------------------------------------------------------+
-|                    PowerShell Bridge (Ver 9.1.0)                              |
+|                    PowerShell Bridge (Ver 9.1.1)                              |
 |                    FM-Obsidian-Bridge-Payload.ps1                              |
 |                                                                               |
 |   1. Payload Parsing & Base64 Decoding                                        |
@@ -46,19 +47,35 @@ The FM-Obsidian Bridge connects FileMaker CRM with Obsidian Knowledge Vaults usi
 +-------------------------------------------------------------------------------+
 ```
 
-### 1.1 FileMaker Evidence Boundaries
-Canonical architectural claims regarding FileMaker integration are strictly bounded by direct repository evidence:
-- **Directly Evidenced**:
-  - Script 307 (Payload dispatch & merge transport)
-  - Base Elements plug-in command execution transport (`BE_ExecuteSystemCommand`)
-  - Base64-encoded JSON payload transport (`-PayloadB64` / `-PayloadFile`)
-- **Historical / Unverified against Current Repository Evidence**:
-  - Script 299 (historical open/create routine)
-  - Script 313 (historical compare routine)
-  - Specific FileMaker Pro major/minor version numbers
-  - Specific Base Elements plug-in version numbers (e.g. 5.0.0.2)
+### 1.1 FileMaker Integration Architecture & Direct Evidence
 
-No architectural invariants or security decisions depend on the unverified historical claims.
+The FileMaker integration architecture is established by direct repository and DDR evidence across four key scripts:
+
+- **Script 299: `EXT-obs_OBSノート-開く`**
+  - Handles normal UCI / customer identity flow.
+  - On `status = "NG"` with `code = "UUID_FOLDER_CONFLICT"`, branches into merge resolution.
+  - Calls Script 370 (`EXT-obs_顧客フォルダ統合`).
+  - Accepts merge success only for `MERGE_COMPLETED` or `MERGE_NOT_REQUIRED`.
+  - Reruns UCI at most once after successful merge.
+  - Repeated conflict, invalid result, or merge failure terminates fail-closed.
+
+- **Script 370: `EXT-obs_顧客フォルダ統合`**
+  - Establishes FileMaker customer / Vault context.
+  - Enforces full-table `pk_CLIENT` uniqueness guard.
+  - Dispatches `PLAN_CUSTOMER_FOLDER_MERGE` through Script 307.
+  - Validates plan response structure.
+  - Obtains explicit Human approval before executing APPLY.
+  - Passes opaque `planToken` unchanged.
+  - Dispatches `APPLY_CUSTOMER_FOLDER_MERGE` through Script 307.
+  - Validates terminal result and returns structured script result.
+
+- **Script 365: `EXT-obs_顧客名・代表者名同期`**
+  - UCI / customer identity synchronization path.
+
+- **Script 307: `EXT-obs_内部CallPS-PAYLOAD`**
+  - PowerShell payload transport and dispatch helper via Base Elements plug-in (`BE_ExecuteSystemCommand`) using `-PayloadB64` or `-PayloadFile`.
+
+FileMaker itself does not directly mutate the filesystem for merge operations; all mutations are executed exclusively through the PowerShell bridge engine.
 
 ---
 
@@ -308,9 +325,21 @@ Key contract verification coverage:
 
 ---
 
-## 6. Authority Hierarchy & Conflict Resolution Rule
+## 6. Corrective Internals Reconciliation (Ver 9.1.1)
 
-1. **Current Production Implementation** (`FM-Obsidian-Bridge-Payload.ps1` Ver 9.1.0) and **Final Closure Authorities** (`Step4C-23`, `Step4C-24`, `Step4C-25`, `Step4C-26`) are the supreme technical authority.
+The 9.1.1 corrective closure consolidates internal invariants across the bridge engine:
+
+- **P-C1 Byte-Preservation Handling**: Strict binary and text stream preservation across all filesystem operations, maintaining UTF-8 BOM and CRLF integrity with zero content truncation or silent byte alteration.
+- **P-C2 Fail-Closed `FOLDER_UUID_INVALID` Handling**: Strict validation of Markdown YAML frontmatter `UUID:` keys. Any malformed, non-canonical, or invalid UUID terminates fail-closed immediately with `FOLDER_UUID_INVALID` without automatic normalization or continue-through.
+- **P-C5 YAML-Header Materialization**: Reliable, deterministic frontmatter parsing, formatting, and key-order preservation during note update and relocation phases.
+- **P-C6 Lifecycle Ordering & Safety**: Strict sequential phase boundaries across discovery, target preflight inspection, exclusive staging creation, durable journal tracking, pre-commit final topology verification, atomic commit marker creation, and post-commit cleanup interlock.
+- **P-C9 APPLY Promotion RelativePath Projection**: Promoted managed notes accurately calculate and maintain true Vault-relative path identities (`RelativePath`) during relocation resolution.
+
+---
+
+## 7. Authority Hierarchy & Conflict Resolution Rule
+
+1. **Current Production Implementation** (`FM-Obsidian-Bridge-Payload.ps1` Ver 9.1.1) and **Final Closure Authorities** (`FINAL_GIT_CLOSURE_HUMAN_GATE_20260912`) are the supreme technical authority.
 2. **Current Governance Documentation** (`docs/current/*`) reflects and governs this baseline.
 3. **Historical Documents** (`docs/project/*`, `docs/claude/*`, `handoff/*`, `Claude/*`, `Antigravity/*`, `ChatGPT/*`) are historical reference materials and must not override current production or current specifications.
 

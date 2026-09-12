@@ -38,7 +38,7 @@ Every future behavior-affecting task MUST complete all 13 steps in strict sequen
 9. **Identify Impacted Tests**:
    Identify required focused test harnesses, regression tests, and fixture requirements.
 10. **Identify FileMaker / Obsidian Integration Impact**:
-    Evaluate impacts on FileMaker scripts (299, 307, 313), payload serialization, Base Elements transport, and Obsidian Vault topology.
+    Evaluate impacts on FileMaker scripts (299 — EXT-obs_OBSノート-開く, 307 — EXT-obs_内部CallPS-PAYLOAD, 365 — EXT-obs_顧客名・代表者名同期, 370 — EXT-obs_顧客フォルダ統合), payload serialization, Base Elements transport, and Obsidian Vault topology.
 11. **Produce Bounded Change Proposal**:
     Draft a bounded proposal defining scope, contract delta, test strategy, risk analysis, and verification plan.
 12. **Obtain Explicit Human Authorization**:
@@ -88,5 +88,5 @@ Always maintain strict distinction between product, feature, and internal routin
 - **Feature ID:** `customer-folder-merge`
 - **Feature Title:** `Customer Folder Merge`
 - **Feature Version:** `1`
-- **Implementation Version:** `9.1.0`
+- **Implementation Version:** `9.1.1`
 - **Internal / Legacy Routine:** `UPDATE_CUSTOMER_IDENTITY` (an internal routine / older action; never use as top-level product name).

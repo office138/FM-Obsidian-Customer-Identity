@@ -13,11 +13,11 @@ The following canonical documents govern current development, feature evolutions
 - [`docs/current/DEVELOPMENT_ENTRY_PROTOCOL.md`](docs/current/DEVELOPMENT_ENTRY_PROTOCOL.md) — Mandatory 13-step development entry protocol before any code modification.
 - [`docs/current/CURRENT_BASELINE.md`](docs/current/CURRENT_BASELINE.md) — Human-readable production baseline record.
 - [`docs/current/current-baseline.json`](docs/current/current-baseline.json) — Machine-readable closed baseline specification.
-- [`docs/current/SPECIFICATION.md`](docs/current/SPECIFICATION.md) — Canonical functional specification for Customer Folder Merge v1 (Ver 9.1.0).
+- [`docs/current/SPECIFICATION.md`](docs/current/SPECIFICATION.md) — Canonical functional specification for Customer Folder Merge v1 (Ver 9.1.1).
 - [`docs/current/ARCHITECTURE_DESIGN.md`](docs/current/ARCHITECTURE_DESIGN.md) — Canonical internal architecture and design.
 
 **Product Identity:** `FM-Obsidian-Bridge`  
-**Current Closed Feature:** `customer-folder-merge` (Customer Folder Merge v1, Ver 9.1.0)  
+**Current Closed Feature:** `customer-folder-merge` (Customer Folder Merge v1, Ver 9.1.1)
 **Baseline Guard Command:**
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File tools/Test-CurrentBaseline.ps1
@@ -41,7 +41,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File tools/Test-CurrentBaseline.p
 ## Repository構成
 
 ```text
-FM-Obsidian-Bridge-Payload.ps1   PowerShell本体（Ver: 9.1.0 - Customer Folder Merge v1）
+FM-Obsidian-Bridge-Payload.ps1   PowerShell本体（Ver: 9.1.1 - Customer Folder Merge v1）
 docs/current/                    最新仕様・アーキテクチャ・Baseline・開発プロトコル
 tools/                           Test-CurrentBaseline.ps1 等の検証ツール
 filemaker/                       FileMakerスクリプト書き出し

@@ -6,8 +6,8 @@
 - **Product Title:** FM-Obsidian Bridge
 - **Feature:** Customer Folder Merge (`featureId`: `customer-folder-merge`)
 - **Feature Version:** `1`
-- **Implementation Version:** `9.1.0`
-- **Version Header:** `Ver: 9.1.0 (2026-08-29) - Customer Folder Merge v1 Implementation`
+- **Implementation Version:** `9.1.1`
+- **Version Header:** `Ver: 9.1.1 (2026-09-12) - Customer Folder Merge v1 Corrective Closure`
 - **Internal / Legacy Routine:** `UPDATE_CUSTOMER_IDENTITY` (an internal routine / older action; never use as a top-level product identifier)
 - **Production Baseline Reference:** [`CURRENT_BASELINE.md`](CURRENT_BASELINE.md) and [`current-baseline.json`](current-baseline.json)
 
@@ -393,3 +393,38 @@ Create Exclusive Staging Dir (staging_<TxId>) + Owner Marker (.fm-obsidian-merge
 - **No Cross-Vault Token Reuse**: Tokens issued for Vault A cannot be applied in Vault B.
 - **No Safety Check Bypass**: Flags or parameters to disable hardlink, ADS, reparse point, or case-sensitivity checks are strictly forbidden.
 - **No In-Place Overwriting**: Markdown notes are never overwritten without UUID identity verification and content checksum validation.
+
+---
+
+## 9. Corrective Closure
+
+### 9.1.1 Corrective Closure
+
+The Customer Folder Merge v1 corrective closure is fixed at implementation version 9.1.1 and does not introduce a new feature version. Customer Folder Merge remains Feature Version 1 / implementation 9.1.1.
+
+#### Explicit Settled Behavioral Invariants:
+
+1. **Fail-Closed Invalid UUID Finalization**:
+   Invalid UUID evidence is strictly fail-closed: `status = NG`, `code = FOLDER_UUID_INVALID`. No automatic repair, normalization, or continue-through is permitted for invalid UUID evidence.
+2. **Distinct Conflict Code Preservation**:
+   `UUID_FOLDER_CONFLICT` remains the distinct multiple-folder identity-conflict path used by the UCI/FileMaker caller flow.
+3. **Action Protocol Invariance**:
+   `PLAN_CUSTOMER_FOLDER_MERGE` and `APPLY_CUSTOMER_FOLDER_MERGE` action names remain unchanged.
+4. **Opaque Plan-Token Contract**:
+   `planToken` remains completely opaque to FileMaker and is passed unchanged from PLAN to APPLY.
+5. **External Terminal Response Invariance**:
+   `MERGE_PLAN_READY`, `MERGE_NOT_REQUIRED`, and `MERGE_COMPLETED` external contracts remain current.
+6. **APPLY RelativePath Projection Corrective (P-C9)**:
+   Promoted managed-note results retain correct Vault-relative path identity (`RelativePath`). This specifies the observable/invariant integrity required by the specification. `RelativePath` is not a new FileMaker-facing response wire field.
+7. **Feature Version Stability**:
+   Corrective closure does not introduce a new feature version. Customer Folder Merge remains Feature Version 1 / implementation 9.1.1.
+
+#### Summary of Settled Corrective Closures:
+
+- **Legacy folder/name-match corrective closure**: Reconciled and validated across focused regression suites.
+- **Fail-closed invalid UUID finalization**: Invalid UUID formats in Markdown frontmatter reject immediately with `FOLDER_UUID_INVALID`.
+- **Byte/content preservation corrective**: Byte-exact payload and note content handling preserved without loss.
+- **YAML/header materialization correctness**: Correct frontmatter ordering and key preservation maintained.
+- **Lifecycle ordering and safety**: Strict sequential ordering enforced across all discovery, preflight, staging, verification, and commit phases.
+- **APPLY RelativePath projection corrective**: Note relocation results reflect true Vault-relative paths.
+- **Zero external PLAN/APPLY protocol change**: Complete backward-compatible stability with FileMaker integration layer.
