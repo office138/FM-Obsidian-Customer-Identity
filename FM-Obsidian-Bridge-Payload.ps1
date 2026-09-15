@@ -1376,8 +1376,17 @@ function New-MergeResponse {
 }
 
 # ---- Win32 Native Helpers ----
-if (-not ([System.Management.Automation.PSTypeName]'Win32NativeMergeHelper').Type) {
-  Add-Type -TypeDefinition @"
+# Performance optimization: Load pre-compiled DLL when available (~350ms faster).
+# Falls back to inline Add-Type compilation if DLL is not found.
+$__win32DllPath = Join-Path $PSScriptRoot 'lib\Win32NativeHelpers.dll'
+if ((-not ([System.Management.Automation.PSTypeName]'Win32NativeMergeHelper').Type) -or
+    (-not ([System.Management.Automation.PSTypeName]'Win32DurableJournalHelper').Type)) {
+  if (Test-Path -LiteralPath $__win32DllPath) {
+    Add-Type -Path $__win32DllPath
+  } else {
+    # Fallback: inline compilation (slower, ~350ms)
+    if (-not ([System.Management.Automation.PSTypeName]'Win32NativeMergeHelper').Type) {
+      Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -1543,10 +1552,9 @@ public static class Win32NativeMergeHelper {
     }
 }
 "@
-}
-
-if (-not ([System.Management.Automation.PSTypeName]'Win32DurableJournalHelper').Type) {
-  Add-Type -TypeDefinition @"
+    }
+    if (-not ([System.Management.Automation.PSTypeName]'Win32DurableJournalHelper').Type) {
+      Add-Type -TypeDefinition @"
 using System;
 using System.Runtime.InteropServices;
 
@@ -1563,6 +1571,8 @@ public static class Win32DurableJournalHelper {
     public const uint MOVEFILE_WRITE_THROUGH    = 0x8;
 }
 "@
+    }
+  }
 }
 
 if (-not (Test-Path variable:global:__TEST_CRASH_HOOK)) {

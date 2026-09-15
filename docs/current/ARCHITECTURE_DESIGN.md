@@ -200,9 +200,14 @@ To detect existing filesystem occupants at the canonical merge destination befor
 - **Pipeline Isolation**: The PLAN pipeline (`Invoke-PlanCustomerFolderMerge`) does not invoke `Resolve-MergeTargetOccupancyState`.
 - **TOCTOU Defense Preservation**: Generic staging same-name throw (`throw "ステージングに同名ファイルが既に存在します: $dstPath"`) and canonical same-name throw (`throw "最終Canonicalフォルダに同名ファイルが既に存在します: $finalFile"`) are preserved in the payload AST as defense-in-depth against race conditions.
 
-### 3.3 Win32 Kernel APIs (P/Invoke)
+### 3.3 Win32 Kernel APIs (P/Invoke) & Assembly Loading Architecture
 
-To guarantee safety beyond standard .NET abstractions, the payload includes a C# type definition (`Win32NativeMergeHelper`) compiling native Win32 kernel APIs:
+To guarantee safety beyond standard .NET abstractions, the payload integrates native Win32 kernel APIs across two static helper classes (`Win32NativeMergeHelper` and `Win32DurableJournalHelper`):
+
+#### Assembly Loading Optimization & Fallback
+To avoid the ~350ms runtime compilation overhead of `Add-Type -TypeDefinition` (invoking `csc.exe` on every bridge process launch), the bridge implements a dual-path loading strategy:
+1. **Pre-compiled DLL Loading (Primary)**: If `lib\Win32NativeHelpers.dll` exists at runtime relative to `$PSScriptRoot`, it is loaded directly via `Add-Type -Path`. This reduces bridge startup overhead by ~470ms (E2E ~1134ms down to ~661ms). Source is maintained in `lib\Win32NativeHelpers.cs` and compiled via `tools\Build-Win32Assembly.ps1`.
+2. **Inline Dynamic Compilation (Fail-Safe Fallback)**: If the pre-compiled DLL is absent or cannot be loaded, the payload automatically falls back to inline `Add-Type -TypeDefinition` compilation of the identical C# source, preserving 100% standalone execution capability and zero-configuration transport.
 
 | Win32 API Function | Usage in Payload | Safety Purpose |
 |---|---|---|
@@ -212,6 +217,7 @@ To guarantee safety beyond standard .NET abstractions, the payload includes a C#
 | `FindFirstStreamW` / `FindNextStreamW` / `FindClose` | `Test-FileAlternateDataStreamsSafe` | Enumerate all named streams. Rejects files with non-standard NTFS Alternate Data Streams (`:StreamName:$DATA`). |
 | `GetLongPathNameW` | `Resolve-Win32CanonicalPath` | Resolves 8.3 short-name components in a Win32 path to their long-name equivalents, normalizing short-path aliases while preserving the full absolute path. |
 | `CreateDirectoryW` | `New-Win32ExclusiveDirectory` | Atomically creates directory with error code 183 (`ERROR_ALREADY_EXISTS`) check, eliminating TOCTOU race conditions. |
+| `MoveFileExW` | `Win32DurableJournalHelper::MoveFileEx` | Atomic file moves with `MOVEFILE_WRITE_THROUGH` and `MOVEFILE_REPLACE_EXISTING` flags for durable transaction journaling. |
 
 Win32 Helper R1 adds a PowerShell helper layer above the P/Invoke declarations: directory handle acquisition with specific desired-access/share/flag contracts (`FILE_LIST_DIRECTORY` or `DELETE` plus `FILE_FLAG_BACKUP_SEMANTICS`), filesystem object identity retrieval via `GetFileInformationByHandle` (volume serial number plus file index tuple), path-to-identity binding verification, and handle-based atomic rename via `SetFileInformationByHandle` / `FileRenameInfo`. Deterministic handle disposal is provided by `Close-DirectoryHandleOnce`. This helper capability is present in the current committed source; full APPLY Case A/B integration using this layer is not yet implemented in the current committed source.
 
