@@ -40,8 +40,8 @@
 | canonicalSizeBytes | 333267 |
 | canonicalEncoding | UTF-8 BOM |
 | canonicalEol | CRLF |
-| bindingCommitSha | ae7a7b3a447843ce70ee1655946e41da77c2a815 |
-| commitParentSha | fb6dbade8222428ab553a2bd9755575b6b5d68d1 |
+| bindingCommitSha | b95489cf931ff1806a0580725ab13c225dd8917a |
+| commitParentSha | 223f6fae859cf9cf1d4cf21d8b2e1a3bc472d829 |
 | closureAuthority | FINAL_GIT_CLOSURE_HUMAN_GATE_20260912 |
 | closureDisposition | PASS_FINAL_GIT_CLOSURE_COMMIT_PUSH_COMPLETE |
 | productionVaultTargetPath | C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1 |
@@ -59,8 +59,8 @@ Formal project closure disposition:
 `PASS_CUSTOMER_FOLDER_MERGE_V1_FORMAL_PROJECT_CLOSURE_COMPLETE`
 
 - **Production Target Path:** `C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1`
-- **Binding Commit:** `ae7a7b3a447843ce70ee1655946e41da77c2a815`
-- **Commit Parent:** `fb6dbade8222428ab553a2bd9755575b6b5d68d1`
+- **Binding Commit:** `b95489cf931ff1806a0580725ab13c225dd8917a`
+- **Commit Parent:** `223f6fae859cf9cf1d4cf21d8b2e1a3bc472d829`
 - **Canonical SHA256:** `3AFDF25C643F8820545FF169DEC411A13B990EBF8C99086F5AB7DC33EC9CB50B`
 - **Canonical SizeBytes:** `333267`
 - **Implementation Version:** `9.1.1`
