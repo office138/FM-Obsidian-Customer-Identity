@@ -22,7 +22,7 @@
   "gate5Status": "FORMALLY_CLOSED_BY_HUMAN_AUTHORITY",
   "gate5ClosureNote": "Gate 5 and subsequent corrective cycles were formally closed, full regression accepted, production deployed on 2026-09-12, and final Git closure completed under Human Authority.",
   "productionDeploymentStatus": "DEPLOYED",
-  "productionDeploymentDate": "2026-09-12",
-  "productionPayloadSha256": "1AE2E326BC5261283CC9C375696DABA44494A881E22B4F2A31C273B52F5140B3",
-  "productionDeploymentAuthority": "Human Authority (approved and completed following Gate 5 and final corrective closure)"
+  "productionDeploymentDate": "2026-09-15",
+  "productionPayloadSha256": "3AFDF25C643F8820545FF169DEC411A13B990EBF8C99086F5AB7DC33EC9CB50B",
+  "productionDeploymentAuthority": "Human Authority (approved performance optimization deployment)"
 }

@@ -74,11 +74,11 @@ Formal project closure disposition:
 |---|---|
 | gate5Status | FORMALLY_CLOSED_BY_HUMAN_AUTHORITY |
 | productionDeploymentStatus | DEPLOYED |
-| productionDeploymentDate | 2026-09-12 |
-| productionPayloadSha256 | 1AE2E326BC5261283CC9C375696DABA44494A881E22B4F2A31C273B52F5140B3 |
-| productionDeploymentAuthority | Human Authority (approved and completed following Gate 5 and final corrective closure) |
+| productionDeploymentDate | 2026-09-15 |
+| productionPayloadSha256 | 3AFDF25C643F8820545FF169DEC411A13B990EBF8C99086F5AB7DC33EC9CB50B |
+| productionDeploymentAuthority | Human Authority (approved performance optimization deployment) |
 
-Production payload SHA256 at `C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1` matches the canonical SHA256 above exactly (`1AE2E326BC5261283CC9C375696DABA44494A881E22B4F2A31C273B52F5140B3`).
+Production payload SHA256 at `C:\Users\Fujitsu1320\Documents\07Obsidian\【Vault】INS\scripts\FM-Obsidian-Bridge-Payload.ps1` matches the canonical SHA256 above exactly (`3AFDF25C643F8820545FF169DEC411A13B990EBF8C99086F5AB7DC33EC9CB50B`).
 
 **Closure and deployment reconciliation:**
-Following Gate 5 and subsequent corrective cycles (including P-C1 through P-C9, legacy name-match focused regression, and full 17-surface regression), the 9.1.1 release was deployed to the production Obsidian Vault on 2026-09-12 and verified under Human Authority. Full regression acceptance, FileMaker integration compatibility, and final Git closure were achieved with zero regressions.
+Following Gate 5, the performance optimization release (pre-compiled Win32 assembly loading) was deployed to the production Obsidian Vault on 2026-09-15 and verified under Human Authority. Full execution verification, FileMaker integration compatibility, and baseline guard green were achieved with zero regressions.
