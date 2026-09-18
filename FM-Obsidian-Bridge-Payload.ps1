@@ -1,6 +1,15 @@
 ﻿<# =====================================================
 FM-Obsidian-Bridge-Payload.ps1
-Ver: 9.1.1 (2026-09-12) - Customer Folder Merge v1 Corrective Closure
+Ver: 9.2.0 (2026-09-18) - Search Performance Tier 0/1
+
+Update: 2026-09-18 (v9.2.0)
+- Tier 0: OPEN/CHECK/COMPARE 各関数で同一引数の Get-UciUuidMatchedCustomerFolders を3回
+  呼び出していた重複(実質未判定の先行2ブロック)を削除し、01_顧客 全再帰走査を1回に統合。
+- Tier 1: Get-UciUuidMatchedCustomerFolders / Get-UciFolderEvidence / Get-UuidNoteTypeMatchesInTree /
+  UPDATE_CUSTOMER_IDENTITY Step1 の全再帰走査を、Get-ChildItem -Recurse + 全文 ReadAllLines から
+  .NET 直接列挙(Get-MdFilesOrdered) + frontmatter 限定 StreamReader 読取(Read-YamlUuidFast)へ置換。
+  判定規則・戻り値契約・列挙順(detailPath)は不変。BOM 自動判定・例外安全(skip)・PS5.1 互換。
+- 参照: docs/proposals/SEARCH_PERFORMANCE_PROPOSAL_2026-09-18.md
 
 Update: 2026-09-12
 - Legacy customer-folder/name-match corrective fixes completed
@@ -452,6 +461,126 @@ function Get-YamlTagValues($headerLines) {
   return $result.ToArray()
 }
 
+# ========================================================
+# v9.2.0 (Tier 1) 検索高速化 helper
+#
+# 目的: 01_顧客 配下の全再帰走査で「UUIDを1つ読むためだけに全文を読む」
+#       (Test-Path + Get-Item + ReadAllLines) と Get-ChildItem -Recurse の
+#       PSObject オーバーヘッドを排除する。
+# 制約: 判定規則・戻り値契約・列挙順(=detailPath の選ばれ方)を現行と同一に保つ。
+#   - frontmatter 境界規則は Get-YamlHeaderLines と同一
+#       1行目 Trim()=="---" が開始 / 次に Trim()=="---" となる行が終端 / 終端なし=不正YAML
+#   - "UUID:" の取り出しは Get-YamlScalarValue と同一
+#       最初に一致した行 / 前後の "…" または '…' を1組だけ剥がす / 本文中のUUIDは見ない
+#   - 列挙順は Get-ChildItem -Recurse -File と同一
+#       各ディレクトリで ファイル(名前順) → サブディレクトリ(名前順)へ再帰
+#   - Hidden 属性のファイル/ディレクトリは対象外(Get-ChildItem の -Force なし挙動と同一)。
+#   - 例外安全: アクセス拒否・再解析ポイント・I/O 例外は当該エントリを skip し、
+#       スクリプトを異常終了させない(-ErrorAction SilentlyContinue 相当)。
+#   - Windows PowerShell 5.1 (.NET Framework 4.x) で動作する API のみ使用。
+# ========================================================
+
+# frontmatter だけを StreamReader で読み、"UUID:" の値を返す。
+# 戻り値 hashtable:
+#   State = "NoFrontmatter" ... 1行目が"---"でない/空ファイル   (Get-YamlHeaderLines: ,@()  → UUID "")
+#         = "Unclosed"      ... 開始"---"はあるが終端"---"がない (Get-YamlHeaderLines: $null → 不正YAML)
+#         = "Ok"            ... frontmatter 正常(Uuid は "" の場合もある)
+#         = "ReadError"     ... 読み取り例外(呼び出し側は skip する = Get-ChildItem/ReadAllLines 失敗時と同等)
+#   Uuid  = [string]
+# ※ StreamReader は detectEncodingFromByteOrderMarks=$true で生成し、BOM 有無を自動判定する。
+#    BOM なしの場合の既定は UTF-8 (ReadAllLines(path, UTF8Encoding) と同じ解釈)。
+function Read-YamlUuidFast([string]$path) {
+  $sr = $null
+  try {
+    # bufferSize=1024: frontmatter は通常数百バイトであり、本文(数十KB)の先読みを避ける。
+    # 行が 1024 文字を超える場合も StreamReader が内部で継続読込するため正しく処理される。
+    $sr = [System.IO.StreamReader]::new($path, [System.Text.UTF8Encoding]::new($false), $true, 1024)
+    $first = $sr.ReadLine()
+    if ($null -eq $first) { return @{ State = "NoFrontmatter"; Uuid = "" } }
+    if ($first.Trim() -ne "---") { return @{ State = "NoFrontmatter"; Uuid = "" } }
+    $uuid = ""
+    $found = $false
+    while ($true) {
+      $line = $sr.ReadLine()
+      if ($null -eq $line) { break }
+      $t = $line.Trim()
+      if ($t -eq "---") { return @{ State = "Ok"; Uuid = $uuid } }
+      if (-not $found -and $t.StartsWith("UUID:")) {
+        $v = $t.Substring(5).Trim()
+        if ($v.Length -ge 2 -and (($v.StartsWith('"') -and $v.EndsWith('"')) -or ($v.StartsWith("'") -and $v.EndsWith("'")))) {
+          $v = $v.Substring(1, $v.Length - 2)
+        }
+        $uuid = $v
+        $found = $true
+      }
+    }
+    return @{ State = "Unclosed"; Uuid = "" }
+  } catch {
+    return @{ State = "ReadError"; Uuid = "" }
+  } finally {
+    if ($null -ne $sr) { $sr.Dispose() }
+  }
+}
+
+# Get-ChildItem -LiteralPath <root> -Filter <pattern> -File -Recurse -ErrorAction SilentlyContinue
+# と同じ訪問順で FileInfo を列挙する(.NET 直接呼出し、PSObject ラップ無し)。
+#   - 各ディレクトリ: ファイル(名前順) → サブディレクトリ(名前順)の深さ優先。
+#   - 名前順比較は OrdinalIgnoreCase (NTFS の FindFirstFile 列挙順と一致)。
+#   - GetFiles/GetDirectories の例外(アクセス拒否・パス長超過・I/O)は当該ディレクトリを skip。
+#   - 再解析ポイント(ジャンクション/シンボリックリンク)のディレクトリへは降下しない
+#     (循環リンクによる無限再帰・Vault 外への脱出を防ぐ。Get-ChildItem -Recurse との差分だが安全側)。
+function Get-MdFilesOrdered([string]$RootPath, [string]$Pattern) {
+  $out = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
+  if ([string]::IsNullOrWhiteSpace($RootPath)) { return $out }
+  if ([string]::IsNullOrWhiteSpace($Pattern)) { $Pattern = "*.md" }
+  $cmp = [System.StringComparer]::OrdinalIgnoreCase
+  $stack = [System.Collections.Generic.Stack[System.IO.DirectoryInfo]]::new()
+  try {
+    $rootInfo = [System.IO.DirectoryInfo]::new($RootPath)
+    if (-not $rootInfo.Exists) { return $out }
+    $stack.Push($rootInfo)
+  } catch { return $out }
+  while ($stack.Count -gt 0) {
+    $dir = $stack.Pop()
+    $files = $null
+    $subs = $null
+    try {
+      $files = $dir.GetFiles($Pattern, [System.IO.SearchOption]::TopDirectoryOnly)
+      $subs = $dir.GetDirectories()
+    } catch { continue }
+    if ($null -ne $files -and $files.Length -gt 1) {
+      $keys = New-Object string[] $files.Length
+      for ($i = 0; $i -lt $files.Length; $i++) { $keys[$i] = $files[$i].Name }
+      [Array]::Sort([Array]$keys, [Array]$files, [System.Collections.IComparer]$cmp)
+    }
+    if ($null -ne $files) {
+      foreach ($f in $files) {
+        # Get-ChildItem は -Force なしでは Hidden 属性の項目を返さない。同じ挙動に合わせる。
+        try { if (($f.Attributes -band [System.IO.FileAttributes]::Hidden) -ne 0) { continue } } catch { continue }
+        $out.Add($f)
+      }
+    }
+    if ($null -eq $subs) { continue }
+    if ($subs.Length -gt 1) {
+      $dkeys = New-Object string[] $subs.Length
+      for ($i = 0; $i -lt $subs.Length; $i++) { $dkeys[$i] = $subs[$i].Name }
+      [Array]::Sort([Array]$dkeys, [Array]$subs, [System.Collections.IComparer]$cmp)
+    }
+    for ($i = $subs.Length - 1; $i -ge 0; $i--) {
+      $d = $subs[$i]
+      try {
+        $attr = $d.Attributes
+        # Hidden ディレクトリへは降下しない(Get-ChildItem -Recurse の -Force なし挙動と同じ)。
+        if (($attr -band [System.IO.FileAttributes]::Hidden) -ne 0) { continue }
+        # 再解析ポイント(ジャンクション/シンボリックリンク)へは降下しない。
+        if (($attr -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+      } catch { continue }
+      $stack.Push($d)
+    }
+  }
+  return $out
+}
+
 function Get-UuidNoteTypeMatches([string]$folderPath, [string]$iconPrefix, [string]$uuid) {
   # 重複ノート作成防止(2026-07-29回帰修正)。
   # 指定フォルダ内で、指定アイコン接頭辞(Get-IconPrefixの戻り値)のファイル名パターンに一致し、
@@ -665,14 +794,17 @@ function Get-UciResolvedNotes([System.IO.DirectoryInfo]$folderInfo, [string]$pkC
 #   必ずcustomer folder直下(非再帰のGet-UuidNoteTypeMatches)を主判定とする。
 #   本関数はscope外ノート(サブフォルダ)の検出・診断のためだけに使用する。
 function Get-UuidNoteTypeMatchesInTree([string]$rootPath, [string]$iconPrefix, [string]$uuid) {
+  # v9.2.0 (Tier 1): Get-ChildItem -Recurse + Get-YamlHeaderLines → Get-MdFilesOrdered + Read-YamlUuidFast。
+  # 判定規則(ファイル名パターン + frontmatter "UUID:" 完全一致のみ)と戻り値契約は不変。
   $matched = [System.Collections.ArrayList]::new()
   if ([string]::IsNullOrWhiteSpace($uuid)) { return $matched.ToArray() }
-  $candidates = Get-ChildItem -LiteralPath $rootPath -Filter "${iconPrefix}_*.md" -File -Recurse -ErrorAction SilentlyContinue
+  $target = $uuid.ToUpperInvariant()
+  $candidates = Get-MdFilesOrdered $rootPath "${iconPrefix}_*.md"
   foreach ($f in $candidates) {
-    $hdr = Get-YamlHeaderLines $f.FullName
-    if ($null -eq $hdr) { continue }
-    $u = Get-YamlScalarValue $hdr "UUID:"
-    if (-not [string]::IsNullOrWhiteSpace($u) -and $u.ToUpperInvariant() -eq $uuid.ToUpperInvariant()) {
+    $r = Read-YamlUuidFast $f.FullName
+    if ($r.State -eq "Unclosed" -or $r.State -eq "ReadError") { continue }
+    $u = [string]$r.Uuid
+    if (-not [string]::IsNullOrWhiteSpace($u) -and $u.ToUpperInvariant() -eq $target) {
       [void]$matched.Add($f.FullName)
     }
   }
@@ -714,14 +846,17 @@ function Get-UciFolderEvidence([string]$folderPath, [string]$pkClient) {
   $conflictPath = $null; $conflictValue = $null
   $invalidUuidPath = $null; $invalidUuidValue = $null
 
-  $files = Get-ChildItem -LiteralPath $folderPath -Filter "*.md" -File -Recurse -ErrorAction SilentlyContinue
+  # v9.2.0 (Tier 1): Get-ChildItem -Recurse + Get-YamlHeaderLines → Get-MdFilesOrdered + Read-YamlUuidFast。
+  # 判定規則・優先順位・detailPath の選ばれ方(列挙順で最初の該当ファイル)は不変。
+  $files = Get-MdFilesOrdered $folderPath "*.md"
   foreach ($f in $files) {
-    $hdr = Get-YamlHeaderLines $f.FullName
-    if ($null -eq $hdr) {
+    $r = Read-YamlUuidFast $f.FullName
+    if ($r.State -eq "ReadError") { continue }
+    if ($r.State -eq "Unclosed") {
       if ($null -eq $invalidYamlPath) { $invalidYamlPath = $f.FullName }
       continue
     }
-    $u = Get-YamlScalarValue $hdr "UUID:"
+    $u = [string]$r.Uuid
     if ([string]::IsNullOrWhiteSpace($u)) { continue }
     if (-not (Test-UciUuidFormat $u)) {
       if ($null -eq $invalidUuidPath) { $invalidUuidPath = $f.FullName; $invalidUuidValue = $u }
@@ -761,14 +896,17 @@ function Get-UciUuidMatchedCustomerFolders([string]$custRootPath, [string]$pkCli
   if ([string]::IsNullOrWhiteSpace($pkClient)) { return $out }
   $custRootInfo = Get-Item -LiteralPath $custRootPath
   $map = @{}
-  $files = Get-ChildItem -LiteralPath $custRootPath -Filter "*.md" -File -Recurse -ErrorAction SilentlyContinue
+  # v9.2.0 (Tier 1): Get-ChildItem -Recurse + Get-YamlHeaderLines → Get-MdFilesOrdered + Read-YamlUuidFast。
+  # 判定規則(UUID形式正 + 完全一致のみ)と戻り値契約(folders / unresolved)は不変。
+  $target = $pkClient.ToUpperInvariant()
+  $files = Get-MdFilesOrdered $custRootPath "*.md"
   foreach ($f in $files) {
-    $hdr = Get-YamlHeaderLines $f.FullName
-    if ($null -eq $hdr) { continue }
-    $u = Get-YamlScalarValue $hdr "UUID:"
+    $r = Read-YamlUuidFast $f.FullName
+    if ($r.State -ne "Ok") { continue }
+    $u = [string]$r.Uuid
     if ([string]::IsNullOrWhiteSpace($u)) { continue }
     if (-not (Test-UciUuidFormat $u)) { continue }
-    if ($u.ToUpperInvariant() -ne $pkClient.ToUpperInvariant()) { continue }
+    if ($u.ToUpperInvariant() -ne $target) { continue }
     $child = Resolve-UciDirectChildFolder $custRootInfo $f.FullName
     if ($null -eq $child) {
       if ($null -eq $out.unresolved) { $out.unresolved = $f.FullName }
@@ -904,13 +1042,15 @@ function Invoke-UpdateCustomerIdentity($payload) {
   }
 
   # ---- Step1: UUID一致ノートの再帰検索(01_顧客配下、YAML frontmatterのみ照合) ----
-  $allMd = Get-ChildItem -LiteralPath $custRootUci -Filter "*.md" -File -Recurse -ErrorAction SilentlyContinue
+  # v9.2.0 (Tier 1): Get-ChildItem -Recurse + Get-YamlHeaderLines → Get-MdFilesOrdered + Read-YamlUuidFast。
+  $allMd = Get-MdFilesOrdered $custRootUci "*.md"
   $matchedNotes = [System.Collections.ArrayList]::new()
+  $pkClientUpper = $pkClient.ToUpperInvariant()
   foreach ($f in $allMd) {
-    $hdr = Get-YamlHeaderLines $f.FullName
-    if ($null -eq $hdr) { continue }
-    $u = Get-YamlScalarValue $hdr "UUID:"
-    if (-not [string]::IsNullOrWhiteSpace($u) -and $u.ToUpperInvariant() -eq $pkClient.ToUpperInvariant()) {
+    $r = Read-YamlUuidFast $f.FullName
+    if ($r.State -eq "Unclosed" -or $r.State -eq "ReadError") { continue }
+    $u = [string]$r.Uuid
+    if (-not [string]::IsNullOrWhiteSpace($u) -and $u.ToUpperInvariant() -eq $pkClientUpper) {
       [void]$matchedNotes.Add($f.FullName)
     }
   }
@@ -4792,17 +4932,10 @@ function Invoke-OpenObsidianNotes($payload) {
   # 顧客フォルダ名・新規ノート名はここで確定したcanonical値以外を使用しない。
   $canonicalFolderName = Get-CanonicalCustomerFolderName $nameRaw $uuid
 
-  # ---- Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護 ----
-  $matchedFoldersList = @(Get-UciUuidMatchedCustomerFolders $custRoot $uuid)
-  if ($matchedFoldersList.Count -ge 2) {
-    Out-NG "UUID_FOLDER_CONFLICT" "同一のpk_CLIENT UUID ($uuid) を持つ顧客フォルダが複数存在します。マージ処理が必要です。(Count: $($matchedFoldersList.Count))"
-  }
-
-  # ---- Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護 ----
-  $matchedFoldersList = @(Get-UciUuidMatchedCustomerFolders $custRoot $uuid)
-  if ($matchedFoldersList.Count -ge 2) {
-    Out-NG "UUID_FOLDER_CONFLICT" "同一のpk_CLIENT UUID ($uuid) を持つ顧客フォルダが複数存在します。マージ処理が必要です。(Count: $($matchedFoldersList.Count))"
-  }
+  # ---- v9.2.0 (Tier 0): 旧「Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護」
+  #   ブロック(同一引数の Get-UciUuidMatchedCustomerFolders を2回追加呼出)を削除した。
+  #   当該ブロックは @(hashtable).Count が常に1となり実質判定していなかった。
+  #   UUID_FOLDER_CONFLICT の判定は後段 Step B ($identityFolders.Count -ge 2) が単独で担う。
   $canonicalFile = "${prefixStr}_${nameNorm}$(Get-UciUuidSuffix $uuid).md"
 
   # ★ v9.0.2 (FIX-1): $targetAbs と 新規CREATE候補path を完全に分離する。
@@ -5352,17 +5485,10 @@ function Invoke-CheckObsidianNotes($payload) {
   # 顧客フォルダ名・新規ノート名はここで確定したcanonical値以外を使用しない。
   $canonicalFolderName = Get-CanonicalCustomerFolderName $nameRaw $uuid
 
-  # ---- Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護 ----
-  $matchedFoldersList = @(Get-UciUuidMatchedCustomerFolders $custRoot $uuid)
-  if ($matchedFoldersList.Count -ge 2) {
-    Out-NG "UUID_FOLDER_CONFLICT" "同一のpk_CLIENT UUID ($uuid) を持つ顧客フォルダが複数存在します。マージ処理が必要です。(Count: $($matchedFoldersList.Count))"
-  }
-
-  # ---- Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護 ----
-  $matchedFoldersList = @(Get-UciUuidMatchedCustomerFolders $custRoot $uuid)
-  if ($matchedFoldersList.Count -ge 2) {
-    Out-NG "UUID_FOLDER_CONFLICT" "同一のpk_CLIENT UUID ($uuid) を持つ顧客フォルダが複数存在します。マージ処理が必要です。(Count: $($matchedFoldersList.Count))"
-  }
+  # ---- v9.2.0 (Tier 0): 旧「Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護」
+  #   ブロック(同一引数の Get-UciUuidMatchedCustomerFolders を2回追加呼出)を削除した。
+  #   当該ブロックは @(hashtable).Count が常に1となり実質判定していなかった。
+  #   UUID_FOLDER_CONFLICT の判定は後段 Step B ($identityFolders.Count -ge 2) が単独で担う。
   $canonicalFile = "${prefixStr}_${nameNorm}$(Get-UciUuidSuffix $uuid).md"
 
   # ★ v9.0.2 (FIX-1): $targetAbs と 新規CREATE候補path を完全に分離する。
@@ -5975,17 +6101,10 @@ function Invoke-CompareObsidianNotes($payload) {
   # 顧客フォルダ名・新規ノート名はここで確定したcanonical値以外を使用しない。
   $canonicalFolderName = Get-CanonicalCustomerFolderName $nameRaw $uuid
 
-  # ---- Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護 ----
-  $matchedFoldersList = @(Get-UciUuidMatchedCustomerFolders $custRoot $uuid)
-  if ($matchedFoldersList.Count -ge 2) {
-    Out-NG "UUID_FOLDER_CONFLICT" "同一のpk_CLIENT UUID ($uuid) を持つ顧客フォルダが複数存在します。マージ処理が必要です。(Count: $($matchedFoldersList.Count))"
-  }
-
-  # ---- Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護 ----
-  $matchedFoldersList = @(Get-UciUuidMatchedCustomerFolders $custRoot $uuid)
-  if ($matchedFoldersList.Count -ge 2) {
-    Out-NG "UUID_FOLDER_CONFLICT" "同一のpk_CLIENT UUID ($uuid) を持つ顧客フォルダが複数存在します。マージ処理が必要です。(Count: $($matchedFoldersList.Count))"
-  }
+  # ---- v9.2.0 (Tier 0): 旧「Customer Folder Merge v1: 複数フォルダ衝突時の Fail-Closed 保護」
+  #   ブロック(同一引数の Get-UciUuidMatchedCustomerFolders を2回追加呼出)を削除した。
+  #   当該ブロックは @(hashtable).Count が常に1となり実質判定していなかった。
+  #   UUID_FOLDER_CONFLICT の判定は後段 Step B ($identityFolders.Count -ge 2) が単独で担う。
   $canonicalFile = "${prefixStr}_${nameNorm}$(Get-UciUuidSuffix $uuid).md"
 
   # ★ v9.0.2 (FIX-1): $targetAbs と 新規CREATE候補path を完全に分離する。
