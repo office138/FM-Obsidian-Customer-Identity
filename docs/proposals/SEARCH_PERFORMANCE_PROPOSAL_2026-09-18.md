@@ -2,7 +2,11 @@
 
 - 日付: 2026-09-18
 - 対象: `FM-Obsidian-Bridge-Payload.ps1` Ver 9.1.1 (SHA256 `3AFDF25C…9CB50B`)
-- 種別: **提案 (Investigation / Design)** — 本体コードは本提案では一切変更していない
+- 種別: **提案 (Investigation / Design)** — 提案時点では本体コードを変更していない
+- 実装状況 (2026-09-18 追記): Human 承認により **Tier 0 / Tier 1 を Ver 9.2.0 として本体へ実装済み**。
+  Tier 2 以降は保留(対象外)。実装の設計記録は `docs/current/ARCHITECTURE_DESIGN.md` §3.4、
+  等価性検証は `tools/perf/Test-PayloadSearchEquivalence.ps1` (321/321) と
+  `tools/perf/Test-OpenCheckResponseEquivalence.ps1` (20/20) を参照。
 - 位置付け: `docs/current/DEVELOPMENT_ENTRY_PROTOCOL.md` の 13-step protocol における
   「調査・設計」段階の成果物。実装は Human authorization 後に別途行う。
 
@@ -256,6 +260,8 @@ mtime を変えずに内容だけ変わるケース(タイムスタンプ保持�
 | `tools/perf/Measure-SearchHotspots.ps1` | 本体から関数を AST 抽出して現行コストを分解計測 (read-only) |
 | `tools/perf/Prototype-FastUuidScan.ps1` | Tier 1/2 の参照実装 (本体未組込み) |
 | `tools/perf/Test-FastScanEquivalence.ps1` | 現行 vs プロトタイプの結果完全一致テスト + 時間比較 |
+| `tools/perf/Test-PayloadSearchEquivalence.ps1` | (実装後) 旧版 payload vs 新版 payload の検索関数 4 本の結果完全一致テスト(エッジ fixture・例外安全含む) |
+| `tools/perf/Test-OpenCheckResponseEquivalence.ps1` | (実装後) 旧版 vs 新版で OPEN/CHECK を E2E 実行し FileMaker 応答文字列の一致を確認 |
 
 実行例:
 
@@ -263,4 +269,8 @@ mtime を変えずに内容だけ変わるケース(タイムスタンプ保持�
 pwsh -NoProfile -File tools/perf/New-SyntheticVault.ps1 -Root C:\Temp\synthvault -Customers 1500
 pwsh -NoProfile -File tools/perf/Measure-SearchHotspots.ps1 -VaultRoot C:\Temp\synthvault
 pwsh -NoProfile -File tools/perf/Test-FastScanEquivalence.ps1 -VaultRoot C:\Temp\synthvault
+# 実装後の回帰確認 (旧版は git から取り出す)
+git show e56682d:FM-Obsidian-Bridge-Payload.ps1 > C:\Temp\ref_9.1.1.ps1
+pwsh -NoProfile -File tools/perf/Test-PayloadSearchEquivalence.ps1 -ReferencePayload C:\Temp\ref_9.1.1.ps1 -VaultRoot C:\Temp\synthvault
+pwsh -NoProfile -File tools/perf/Test-OpenCheckResponseEquivalence.ps1 -ReferencePayload C:\Temp\ref_9.1.1.ps1 -VaultRoot C:\Temp\synthvault
 ```

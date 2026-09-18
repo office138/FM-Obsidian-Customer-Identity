@@ -221,6 +221,28 @@ To avoid the ~350ms runtime compilation overhead of `Add-Type -TypeDefinition` (
 
 Win32 Helper R1 adds a PowerShell helper layer above the P/Invoke declarations: directory handle acquisition with specific desired-access/share/flag contracts (`FILE_LIST_DIRECTORY` or `DELETE` plus `FILE_FLAG_BACKUP_SEMANTICS`), filesystem object identity retrieval via `GetFileInformationByHandle` (volume serial number plus file index tuple), path-to-identity binding verification, and handle-based atomic rename via `SetFileInformationByHandle` / `FileRenameInfo`. Deterministic handle disposal is provided by `Close-DirectoryHandleOnce`. This helper capability is present in the current committed source; full APPLY Case A/B integration using this layer is not yet implemented in the current committed source.
 
+### 3.4 Search Path Performance (Ver 9.2.0, Tier 0 / Tier 1)
+
+Customer identity discovery scans every Markdown file under `01_顧客` on each OPEN / CHECK / COMPARE / UPDATE_CUSTOMER_IDENTITY call, because identity is established **only** by the full UUID in YAML frontmatter (see §7). Ver 9.2.0 optimizes this scan without changing any decision rule, return contract, or error code. Design rationale and measurements are recorded in `docs/proposals/SEARCH_PERFORMANCE_PROPOSAL_2026-09-18.md`.
+
+#### Tier 0 — Single identity scan per call
+`Invoke-OpenObsidianNotes`, `Invoke-CheckObsidianNotes` and `Invoke-CompareObsidianNotes` previously invoked `Get-UciUuidMatchedCustomerFolders $custRoot $uuid` three times with identical arguments. The two leading "Customer Folder Merge v1 Fail-Closed" blocks wrapped the returned hashtable in `@(...)`, so `.Count` was always 1 and they never fired; the authoritative `UUID_FOLDER_CONFLICT` decision has always been made by Step B (`$identityFolders.Count -ge 2`). Ver 9.2.0 removes the two dead blocks in all three handlers; the Step B decision and its message are unchanged.
+
+#### Tier 1 — Frontmatter-bounded read and direct .NET enumeration
+Two helpers replace `Get-ChildItem -Recurse` + `Get-YamlHeaderLines` (full-file `ReadAllLines`) in the four recursive scans (`Get-UciUuidMatchedCustomerFolders`, `Get-UciFolderEvidence`, `Get-UuidNoteTypeMatchesInTree`, and UPDATE_CUSTOMER_IDENTITY Step 1):
+
+| Helper | Contract |
+|---|---|
+| `Read-YamlUuidFast` | `StreamReader` with `detectEncodingFromByteOrderMarks = $true` (UTF-8 default when no BOM), 1 KiB buffer. Reads only until the closing `---`. Boundary rule identical to `Get-YamlHeaderLines` (line 1 `Trim() -eq "---"` opens; next `Trim() -eq "---"` closes; no close ⇒ `Unclosed` = invalid YAML). `UUID:` extraction identical to `Get-YamlScalarValue` (first matching key; one pair of `"…"`/`'…'` stripped; body text never inspected). Returns `State ∈ {NoFrontmatter, Unclosed, Ok, ReadError}` + `Uuid`. I/O exceptions yield `ReadError`, which callers skip (equivalent to the previous `-ErrorAction SilentlyContinue` behavior). |
+| `Get-MdFilesOrdered` | Iterative `DirectoryInfo.GetFiles/GetDirectories` traversal reproducing the `Get-ChildItem -Recurse -File` visit order (files by name, then subdirectories by name, `OrdinalIgnoreCase`), so "first offending file" diagnostics (`detailPath`) are unchanged. Skips `Hidden` items (matching `Get-ChildItem` without `-Force`). Does **not** descend into reparse points (junctions / symlinks) — a deliberate safety-side deviation that prevents cycles and vault escape. Exceptions from `GetFiles` / `GetDirectories` / attribute reads skip the entry and never propagate. Uses only .NET Framework 4.x APIs (`New-Object string[]`, `[Array]::Sort(keys, items, IComparer)`), verified for Windows PowerShell 5.1. |
+
+The non-recursive direct-child authority `Get-UuidNoteTypeMatches`, the merge topology enumerator (`Get-CustomerMergeTopology`), and the UPDATE_CUSTOMER_IDENTITY repair-candidate scan are intentionally left on their original implementation.
+
+#### Verification
+- `tools/perf/Test-PayloadSearchEquivalence.ps1` — extracts the four scan functions from both the 9.1.1 reference payload and the current payload via AST and asserts identical results on a synthetic vault (1,500 customers / 6,150 notes) plus edge fixtures: quoted / lower-case UUID, BOM + CRLF, whitespace-padded delimiters, duplicate `UUID:` key, empty frontmatter, unclosed frontmatter, invalid UUID format, body-only UUID, sub-folder (out-of-scope) note, stray note directly under `01_顧客`, hidden file / hidden directory, unreadable directory, symlink loop, nonexistent root. 321 / 321 pass.
+- `tools/perf/Test-OpenCheckResponseEquivalence.ps1` — runs `Invoke-OpenObsidianNotes` / `Invoke-CheckObsidianNotes` from both payloads end-to-end (Obsidian launch stubbed) and asserts identical `OK|…` / `NG|…` responses across 10 scenarios × 2 modes. 20 / 20 pass.
+- Measured on PowerShell 7.4 / Linux: one OPEN call 6.5 s → 0.6–0.8 s (≈ 8–11×). Windows PowerShell 5.1 has a slower `Get-ChildItem`, so the absolute gain on the production host is expected to be larger.
+
 ---
 
 ## 4. Durable Journal, Rollback, & Commit Architecture

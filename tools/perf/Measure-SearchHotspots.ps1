@@ -21,7 +21,8 @@ if ($errors.Count -gt 0) { throw "Parse error: $($errors[0].Message)" }
 $wanted = @("Get-YamlHeaderLines","Get-YamlScalarValue","Test-UciUuidFormat","Resolve-UciDirectChildFolder",
             "Get-UciUuidMatchedCustomerFolders","Get-UciFolderEvidence","Get-UuidNoteTypeMatches",
             "Get-UuidNoteTypeMatchesInTree","Get-UciOutOfScopeManagedNotes","Get-UciFuzzyNameCandidates",
-            "Sanitize-LeafName","Normalize-ForMatch","Get-IconPrefix","Get-UciUuidSuffix","Get-CanonicalCustomerFolderName")
+            "Sanitize-LeafName","Normalize-ForMatch","Get-IconPrefix","Get-UciUuidSuffix","Get-CanonicalCustomerFolderName",
+            "Read-YamlUuidFast","Get-MdFilesOrdered")
 $funcs = $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $wanted -contains $n.Name }, $false)
 foreach ($f in $funcs) { . ([scriptblock]::Create($f.Extent.Text)) }
 Write-Host ("Loaded {0} functions from payload (read-only)" -f $funcs.Count)
@@ -42,7 +43,7 @@ $prefixStr = Get-IconPrefix "契約一覧"
 $md = @(Get-ChildItem -LiteralPath $custRoot -Filter *.md -File -Recurse)
 Write-Host ("Vault: {0} md files / {1} customer folders`n" -f $md.Count, (Get-ChildItem -LiteralPath $custRoot -Directory).Count)
 
-Write-Host "=== [A] 現行実装: Invoke-OpenObsidianNotes が1回の呼び出しで実行する検索 ==="
+Write-Host "=== [A] 対象payloadの実装: Invoke-OpenObsidianNotes が1回の呼び出しで実行する検索 (v9.1.1では A1 が3回呼ばれる) ==="
 $t = Measure-Block "A1 Get-UciUuidMatchedCustomerFolders (全再帰) x1" { Get-UciUuidMatchedCustomerFolders $custRoot $targetUuid }
 $folder = @($t.folders)[0]
 Measure-Block "A2 同関数 3回目まで (本体は同じ結果を3回計算)" { 1..3 | ForEach-Object { Get-UciUuidMatchedCustomerFolders $custRoot $targetUuid } } | Out-Null
